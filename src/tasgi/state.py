@@ -38,6 +38,36 @@ class AppState:
         with self._lock:
             return self._data.get(name, default)
 
+    def set_service(self, name: str, service: Any) -> Any:
+        """Register a named service on shared app state."""
+
+        if not name:
+            raise ValueError("Service name must be non-empty.")
+        with self._lock:
+            self._data[name] = service
+        return service
+
+    def get_service(self, name: str, default: Any = None) -> Any:
+        """Return a named service or a default when it is absent."""
+
+        return self.get(name, default)
+
+    def require_service(self, name: str) -> Any:
+        """Return a named service or raise a KeyError when missing."""
+
+        with self._lock:
+            if name not in self._data:
+                raise KeyError("Service %r is not registered." % name)
+            return self._data[name]
+
+    def remove_service(self, name: str) -> Any:
+        """Remove and return a named service."""
+
+        with self._lock:
+            if name not in self._data:
+                raise KeyError("Service %r is not registered." % name)
+            return self._data.pop(name)
+
     def snapshot(self) -> dict[str, Any]:
         """Return a shallow copy of the stored state."""
 

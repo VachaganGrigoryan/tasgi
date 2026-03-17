@@ -90,6 +90,30 @@ class TasgiConfigTests(unittest.TestCase):
         snapshot = state.snapshot()
         self.assertEqual(len(snapshot), 200)
 
+    def test_app_state_service_helpers_are_explicit(self) -> None:
+        state = AppState()
+        service = object()
+
+        returned = state.set_service("cache", service)
+
+        self.assertIs(returned, service)
+        self.assertIs(state.get_service("cache"), service)
+        self.assertIs(state.require_service("cache"), service)
+        self.assertIs(state.remove_service("cache"), service)
+        self.assertEqual(state.get_service("cache", "missing"), "missing")
+        with self.assertRaisesRegex(KeyError, "cache"):
+            state.require_service("cache")
+
+    def test_tasgi_app_service_helpers_delegate_to_state(self) -> None:
+        app = TasgiApp()
+        service = object()
+
+        app.add_service("db", service)
+
+        self.assertIs(app.get_service("db"), service)
+        self.assertIs(app.require_service("db"), service)
+        self.assertIs(app.remove_service("db"), service)
+
 
 class TasgiLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_lifecycle_hooks_register_and_run(self) -> None:
@@ -333,6 +357,53 @@ class TasgiRoutingAndRequestTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(b'"message": "ready"', response)
         self.assertIn(b'"content_type": "application/json"', response)
         self.assertIn(b'"query": ""', response)
+
+    async def test_request_service_access_is_explicit_and_thread_safe(self) -> None:
+        app = TasgiApp(config=TasgiConfig(default_execution=THREAD_EXECUTION))
+
+        class CounterService:
+            def __init__(self) -> None:
+                self._lock = threading.Lock()
+                self.value = 0
+
+            def increment(self) -> int:
+                with self._lock:
+                    self.value += 1
+                    return self.value
+
+        @app.on_startup
+        def startup(app_instance) -> None:
+            app_instance.add_service("counter", CounterService())
+
+        @app.on_shutdown
+        def shutdown(app_instance) -> None:
+            app_instance.remove_service("counter")
+
+        @app.get("/count")
+        def count(request) -> JsonResponse:
+            counter = request.service("counter")
+            missing = request.service("missing", "fallback")
+            return JsonResponse({"value": counter.increment(), "missing": missing})
+
+        try:
+            responses = await asyncio.gather(
+                *[ASGIServer(app).handle_raw_request(build_get_request("/count")) for _ in range(3)]
+            )
+        finally:
+            await app.close()
+
+        values: list[int] = []
+        for response in responses:
+            body = response.split(b"\r\n\r\n", maxsplit=1)[1]
+            self.assertIn(b'"missing": "fallback"', body)
+            if b'"value": 1' in body:
+                values.append(1)
+            elif b'"value": 2' in body:
+                values.append(2)
+            elif b'"value": 3' in body:
+                values.append(3)
+
+        self.assertEqual(sorted(values), [1, 2, 3])
 
     def test_response_serialization_emits_final_body_frame(self) -> None:
         response = TextResponse("hello", headers=[("x-demo", "1")])

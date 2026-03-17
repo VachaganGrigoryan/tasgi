@@ -126,6 +126,26 @@ class TasgiApp:
 
         return self.lifecycle.on_shutdown(func)
 
+    def add_service(self, name: str, service: object) -> object:
+        """Register a shared service on application state."""
+
+        return self.state.set_service(name, service)
+
+    def get_service(self, name: str, default: object = None) -> object:
+        """Return a shared service or a default when it is absent."""
+
+        return self.state.get_service(name, default)
+
+    def require_service(self, name: str) -> object:
+        """Return a shared service or raise when it is absent."""
+
+        return self.state.require_service(name)
+
+    def remove_service(self, name: str) -> object:
+        """Remove and return a registered shared service."""
+
+        return self.state.remove_service(name)
+
     def add_middleware(self, middleware: Middleware) -> Middleware:
         """Register request/response middleware."""
 

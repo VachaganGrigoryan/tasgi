@@ -22,6 +22,13 @@ def cpu_demo_work(iterations: int = 800_000) -> int:
     return total
 
 
+class MessageService:
+    """Small demo service stored on application state."""
+
+    def __init__(self, message: str) -> None:
+        self.message = message
+
+
 def build_demo_app() -> TasgiApp:
     """Create the example tasgi application."""
 
@@ -36,15 +43,21 @@ def build_demo_app() -> TasgiApp:
 
     @app.on_startup
     def startup(app_instance) -> None:
-        app_instance.state.message = "tasgi ready"
+        app_instance.add_service("message_service", MessageService("tasgi ready"))
+
+    @app.on_shutdown
+    def shutdown(app_instance) -> None:
+        app_instance.remove_service("message_service")
 
     @app.get("/")
     async def home(request) -> TextResponse:
-        return TextResponse(request.app.state.message)
+        message_service = request.service("message_service")
+        return TextResponse(message_service.message)
 
     @app.get("/json")
     async def json_route(request) -> JsonResponse:
-        return JsonResponse({"framework": "tasgi", "message": request.app.state.message})
+        message_service = request.service("message_service")
+        return JsonResponse({"framework": "tasgi", "message": message_service.message})
 
     @app.post("/echo")
     def echo(request) -> TextResponse:

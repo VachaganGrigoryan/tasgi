@@ -12,6 +12,9 @@ if TYPE_CHECKING:
     from .app import TasgiApp
 
 
+_MISSING = object()
+
+
 @dataclass(frozen=True)
 class Request:
     """Buffered HTTP request built from the ASGI scope and body."""
@@ -72,3 +75,10 @@ class Request:
             if header_name == raw_name:
                 return value.decode("latin-1")
         return default
+
+    def service(self, name: str, default: Any = _MISSING) -> Any:
+        """Resolve a shared app service by name."""
+
+        if default is _MISSING:
+            return self.app.require_service(name)
+        return self.app.get_service(name, default)
