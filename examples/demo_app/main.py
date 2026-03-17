@@ -18,6 +18,8 @@ from app import app
 def main() -> None:
     """Run the example app on the default host and port."""
 
+    print("Demo app is configured to require HTTP/2.")
+    print("Use: curl --http2-prior-knowledge http://127.0.0.1:8000/")
     run(app)
 
 

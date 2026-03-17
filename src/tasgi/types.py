@@ -29,6 +29,7 @@ class RequestData:
     headers: list[Header] = field(default_factory=list)
     body: bytes = b""
     http_version: str = "1.1"
+    scheme: str = "http"
 
 
 @dataclass(frozen=True)

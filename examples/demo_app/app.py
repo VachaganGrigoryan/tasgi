@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import time
 
 from tasgi import (
@@ -29,6 +30,17 @@ class MessageService:
         self.message = message
 
 
+async def require_http2(request, call_next):
+    """Reject non-HTTP/2 requests so the demo exercises the HTTP/2 path explicitly."""
+
+    if request.http_version != "2":
+        return TextResponse(
+            "This demo app requires HTTP/2. Try curl --http2-prior-knowledge http://127.0.0.1:8000/",
+            status_code=505,
+        )
+    return await call_next(request)
+
+# print(f"tasgi demo app is importing {sys._is_gil_enabled()=}")
 def build_demo_app() -> TasgiApp:
     """Create the example tasgi application."""
 
@@ -37,9 +49,10 @@ def build_demo_app() -> TasgiApp:
         port=8000,
         debug=True,
         default_execution=THREAD_EXECUTION,
-        thread_pool_workers=8,
+        thread_pool_workers=12,
     )
     app.add_middleware(TimingMiddleware())
+    # app.add_middleware(require_http2)
 
     @app.on_startup
     def startup(app_instance) -> None:
@@ -52,12 +65,18 @@ def build_demo_app() -> TasgiApp:
     @app.get("/")
     async def home(request) -> TextResponse:
         message_service = request.service("message_service")
-        return TextResponse(message_service.message)
+        return TextResponse("%s over HTTP/%s" % (message_service.message, request.http_version))
 
     @app.get("/json")
     async def json_route(request) -> JsonResponse:
         message_service = request.service("message_service")
-        return JsonResponse({"framework": "tasgi", "message": message_service.message})
+        return JsonResponse(
+            {
+                "framework": "tasgi",
+                "message": message_service.message,
+                "http_version": request.http_version,
+            }
+        )
 
     @app.post("/echo")
     def echo(request) -> TextResponse:
@@ -70,7 +89,11 @@ def build_demo_app() -> TasgiApp:
 
     @app.get("/cpu")
     def cpu_route(request) -> TextResponse:
-        return TextResponse("CPU result: %s" % cpu_demo_work())
+        print("Starting CPU demo work...")
+        result = cpu_demo_work()
+        print("CPU demo work completed.")
+        return TextResponse("CPU result: %s" % result)
+        # return TextResponse("CPU result: %s" % cpu_demo_work())
 
     @app.get("/error")
     def error_route(request):
