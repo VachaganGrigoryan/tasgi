@@ -173,6 +173,9 @@ tasgi/
     demo_app/
       app.py
       main.py
+  benchmarks/
+    benchmark_app.py
+    run_benchmarks.py
   tests/
     test_asgi_server.py
     test_http_parser.py
@@ -202,6 +205,32 @@ curl http://127.0.0.1:8000/sleep
 curl http://127.0.0.1:8000/cpu
 curl http://127.0.0.1:8000/error
 ```
+
+## Running Benchmarks
+
+The benchmark suite exercises real loopback TCP requests against a dedicated benchmark app. It measures:
+
+- async route overhead
+- sync threaded route overhead
+- blocking sync threaded concurrency
+- CPU-heavy threaded concurrency
+- worker thread usage during threaded scenarios
+
+Run it from the project root:
+
+```bash
+python3 benchmarks/run_benchmarks.py
+```
+
+Useful overrides:
+
+```bash
+python3 benchmarks/run_benchmarks.py --requests 500 --concurrency 100
+python3 benchmarks/run_benchmarks.py --cpu-requests 48 --cpu-concurrency 8
+python3 benchmarks/run_benchmarks.py --thread-workers 12 --cpu-iterations 500000
+```
+
+The runner prints per-scenario throughput and latency plus a small async-vs-thread comparison summary. It also fails fast if the threaded validation scenarios do not use multiple worker threads.
 
 ## Current Limits
 
