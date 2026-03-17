@@ -27,6 +27,7 @@ from tasgi import (
 )
 from tasgi.asgi_server import ASGIServer
 from tasgi.response import Response
+from tasgi.routing import Router
 
 
 def build_get_request(path: str) -> bytes:
@@ -216,6 +217,89 @@ class TasgiRoutingAndRequestTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(b"HTTP/1.1 404 Not Found", missing_response)
         self.assertIn(b"HTTP/1.1 405 Method Not Allowed", method_response)
         self.assertIn(b"allow: POST\r\n", method_response)
+
+    async def test_path_params_are_exposed_to_handlers(self) -> None:
+        app = TasgiApp()
+
+        @app.get("/users/{id}/posts/{post_id}", metadata={"name": "user-post-detail"})
+        async def post_detail(request) -> JsonResponse:
+            return JsonResponse(
+                {
+                    "id": request.route_params["id"],
+                    "post_id": request.route_params["post_id"],
+                }
+            )
+
+        try:
+            response = await ASGIServer(app).handle_raw_request(
+                build_get_request("/users/42/posts/abc")
+            )
+        finally:
+            await app.close()
+
+        self.assertIn(b'"id": "42"', response)
+        self.assertIn(b'"post_id": "abc"', response)
+        route = app.router.resolve("GET", "/users/42/posts/abc").route
+        self.assertIsNotNone(route)
+        self.assertEqual(route.metadata, {"name": "user-post-detail"})
+
+    async def test_exact_route_wins_before_param_route(self) -> None:
+        app = TasgiApp()
+
+        @app.get("/users/me")
+        async def me(request) -> TextResponse:
+            return TextResponse("exact")
+
+        @app.get("/users/{id}")
+        async def user_detail(request) -> TextResponse:
+            return TextResponse("param:%s" % request.route_params["id"])
+
+        try:
+            exact_response, param_response = await asyncio.gather(
+                ASGIServer(app).handle_raw_request(build_get_request("/users/me")),
+                ASGIServer(app).handle_raw_request(build_get_request("/users/42")),
+            )
+        finally:
+            await app.close()
+
+        self.assertTrue(exact_response.endswith(b"\r\n\r\nexact"))
+        self.assertTrue(param_response.endswith(b"\r\n\r\nparam:42"))
+
+    def test_router_returns_sorted_allowed_methods_for_param_routes(self) -> None:
+        router = Router()
+
+        def handler(request) -> TextResponse:
+            return TextResponse("ok")
+
+        router.add_route("/items/{id}", ["POST", "GET"], handler)
+
+        match = router.resolve("DELETE", "/items/1")
+
+        self.assertIsNone(match.route)
+        self.assertEqual(match.allowed_methods, ["GET", "POST"])
+
+    def test_router_rejects_ambiguous_param_patterns(self) -> None:
+        router = Router()
+
+        def first(request) -> TextResponse:
+            return TextResponse("first")
+
+        def second(request) -> TextResponse:
+            return TextResponse("second")
+
+        router.add_route("/users/{id}", ["GET"], first)
+
+        with self.assertRaisesRegex(ValueError, "Ambiguous parameter route"):
+            router.add_route("/users/{name}", ["POST"], second)
+
+    def test_router_rejects_invalid_path_param_syntax(self) -> None:
+        router = Router()
+
+        def handler(request) -> TextResponse:
+            return TextResponse("ok")
+
+        with self.assertRaisesRegex(ValueError, "Invalid path parameter segment"):
+            router.add_route("/users/{id", ["GET"], handler)
 
     async def test_request_text_json_and_app_state(self) -> None:
         app = TasgiApp(config=TasgiConfig(debug=True))

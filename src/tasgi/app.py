@@ -72,6 +72,7 @@ class TasgiApp:
         *,
         methods: Optional[list[str]] = None,
         execution: Optional[ExecutionPolicy] = None,
+        metadata: Optional[dict[str, object]] = None,
     ):
         """Register a handler for one or more HTTP methods."""
 
@@ -82,20 +83,38 @@ class TasgiApp:
         def decorator(handler: Handler):
             is_async = inspect.iscoroutinefunction(handler)
             self._validate_handler_policy(path, is_async, execution)
-            self.router.add_route(path, resolved_methods, handler, execution=execution)
+            self.router.add_route(
+                path,
+                resolved_methods,
+                handler,
+                execution=execution,
+                metadata=metadata,
+            )
             return handler
 
         return decorator
 
-    def get(self, path: str, *, execution: Optional[ExecutionPolicy] = None):
+    def get(
+        self,
+        path: str,
+        *,
+        execution: Optional[ExecutionPolicy] = None,
+        metadata: Optional[dict[str, object]] = None,
+    ):
         """Register a GET handler."""
 
-        return self.route(path, methods=["GET"], execution=execution)
+        return self.route(path, methods=["GET"], execution=execution, metadata=metadata)
 
-    def post(self, path: str, *, execution: Optional[ExecutionPolicy] = None):
+    def post(
+        self,
+        path: str,
+        *,
+        execution: Optional[ExecutionPolicy] = None,
+        metadata: Optional[dict[str, object]] = None,
+    ):
         """Register a POST handler."""
 
-        return self.route(path, methods=["POST"], execution=execution)
+        return self.route(path, methods=["POST"], execution=execution, metadata=metadata)
 
     def on_startup(self, func):
         """Register a startup hook."""
@@ -182,14 +201,14 @@ class TasgiApp:
         try:
             validate_http_scope(scope)
             body = await receive_request_body(receive, self.config.max_request_body_size)
-            request = build_request(self, scope, body)
-            route_match = self.router.resolve(request.method, request.path)
+            route_match = self.router.resolve(str(scope["method"]), str(scope["path"]))
 
             if route_match.route is None:
                 if route_match.allowed_methods:
                     raise MethodNotAllowed(route_match.allowed_methods)
                 raise HTTPError(404, "Not Found")
 
+            request = build_request(self, scope, body, route_params=route_match.route_params)
             response = await self._dispatch(route_match.route, request)
         except HTTPError as exc:
             response = self._http_error_response(exc)
