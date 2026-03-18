@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import importlib.util
 from pathlib import Path
+import sys
 from typing import Optional
 
 from .asgi_server import ASGIServer
@@ -16,7 +17,7 @@ from .types import ASGIApp
 def build_parser() -> argparse.ArgumentParser:
     """Create the tasgi CLI parser."""
 
-    parser = argparse.ArgumentParser(description="Run the tasgi demo server.")
+    parser = argparse.ArgumentParser(description="Run the bundled tasgi example server.")
     parser.add_argument("--host", help="Host interface to bind.")
     parser.add_argument("--port", type=int, help="TCP port to bind.")
     return parser
@@ -54,20 +55,28 @@ def run(
 
 
 def main() -> None:
-    """Run the bundled tasgi demo application."""
+    """Run the bundled tasgi service API example application."""
 
     args = build_parser().parse_args()
-    run(_load_repo_demo_app(), host=args.host, port=args.port)
+    run(_load_repo_service_app(), host=args.host, port=args.port)
 
 
-def _load_repo_demo_app() -> ASGIApp:
-    """Load the repository demo app from ``examples/demo_app/app.py``."""
+def _load_repo_service_app() -> ASGIApp:
+    """Load the repository service API example app from ``examples/service_api/app.py``."""
 
     project_root = Path(__file__).resolve().parents[2]
-    demo_app_path = project_root / "examples" / "demo_app" / "app.py"
-    spec = importlib.util.spec_from_file_location("tasgi_repo_demo_app", demo_app_path)
+    example_app_path = project_root / "examples" / "service_api" / "app.py"
+    example_root = str(example_app_path.parent)
+    modular_root = str(project_root / "examples" / "modular_api")
+    for module_name in ["models", "services", "tasgi_repo_service_app"]:
+        sys.modules.pop(module_name, None)
+    for candidate in [example_root, modular_root]:
+        while candidate in sys.path:
+            sys.path.remove(candidate)
+    sys.path.insert(0, example_root)
+    spec = importlib.util.spec_from_file_location("tasgi_repo_service_app", example_app_path)
     if spec is None or spec.loader is None:
-        raise RuntimeError("Unable to load demo app from %s." % demo_app_path)
+        raise RuntimeError("Unable to load example app from %s." % example_app_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module.app

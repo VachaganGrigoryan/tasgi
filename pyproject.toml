@@ -4,11 +4,26 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tasgi"
-version = "0.1.0"
-description = "Educational Thread ASGI runtime prototype."
+version = "0.1.0a1"
+description = "Experimental thread-aware ASGI framework and runtime prototype."
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = []
+keywords = ["asgi", "asyncio", "threads", "http", "websocket", "openapi"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Framework :: AsyncIO",
+  "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+  "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
 
 [project.scripts]
 tasgi = "tasgi.main:main"
