@@ -2,6 +2,11 @@
 
 `tasgi` means Thread ASGI. It is an experimental ASGI-compatible framework/runtime that keeps transport and protocol handling on the event loop while allowing handler execution on either the asyncio loop or a thread runtime.
 
+Runtime design goal:
+
+- the `tasgi` package itself depends only on the Python standard library
+- external tools like `coverage`, `build`, and `twine` are used only for CI, testing, and packaging
+
 ## Status
 
 `tasgi` is currently an alpha-stage project.
@@ -20,6 +25,10 @@ From source:
 ```bash
 pip install -e .
 ```
+
+`tasgi` does not require Poetry at runtime. The project is packaged from `pyproject.toml`
+using the standard PEP 517 build flow, so CI and publishing use `pip`, `build`, and `twine`
+directly instead of a Poetry-specific workflow.
 
 After packaging to TestPyPI, the intended trial install flow is:
 
@@ -230,6 +239,34 @@ Run:
 
 ```bash
 python3 benchmarks/run_benchmarks.py
+```
+
+## CI And Publishing
+
+GitHub Actions workflows are set up for both validation and releases:
+
+- `CI` runs on every push and pull request
+- the primary CI target is free-threaded CPython `3.14t`
+- standard compatibility tests also run on Python 3.14, 3.13, 3.12, and 3.11
+- coverage is reported in CI using `coverage run -m unittest discover -s tests`
+- package builds are verified in CI with `python -m build` and `python -m twine check --strict dist/*`
+
+Publishing is separated from CI:
+
+- `Publish` runs only on version tags like `v0.1.0a1` or on published GitHub Releases
+- release builds run on CPython `3.14t`
+- PyPI upload is configured for Trusted Publishing via GitHub Actions
+- before enabling real PyPI releases, do one TestPyPI dry run and confirm a clean install path
+
+Local commands:
+
+```bash
+python3 -m unittest discover -s tests -v
+python3 -m pip install coverage build twine
+coverage run -m unittest discover -s tests
+coverage report -m
+python3 -m build
+python3 -m twine check --strict dist/*
 ```
 
 ## Current Limits
