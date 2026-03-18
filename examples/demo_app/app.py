@@ -8,6 +8,9 @@ import time
 
 from tasgi import (
     APP_SCOPE,
+    BearerTokenBackend,
+    Identity,
+    RequireScope,
     THREAD_EXECUTION,
     Depends,
     JsonResponse,
@@ -50,6 +53,26 @@ def get_message_service(app) -> MessageService:
 
 def get_request_label(request) -> str:
     return "HTTP/%s" % request.http_version
+
+
+def validate_demo_token(token: str):
+    """Resolve one hard-coded demo token into a small identity."""
+
+    if token == "demo-token":
+        return Identity(
+            subject="alice",
+            display_name="Alice Demo",
+            roles=frozenset({"user"}),
+            scopes=frozenset({"profile"}),
+        )
+    if token == "admin-token":
+        return Identity(
+            subject="admin",
+            display_name="Admin Demo",
+            roles=frozenset({"admin"}),
+            scopes=frozenset({"profile", "admin"}),
+        )
+    return None
 
 
 async def require_http2(request, call_next):
@@ -103,6 +126,7 @@ def build_demo_app() -> TasgiApp:
         default_execution=THREAD_EXECUTION,
         thread_pool_workers=8,
         http2=True,
+        auth_backend=BearerTokenBackend(validate_demo_token),
     )
     app.add_middleware(TimingMiddleware())
     # app.add_middleware(require_http2)
@@ -135,6 +159,40 @@ def build_demo_app() -> TasgiApp:
             "message": message_service.message,
             "http_version": request.http_version,
             "label": request_label,
+        }
+
+    @app.route.get("/public", summary="Public route", tags=["auth"], auth=False, response_model=dict[str, object])
+    async def public_route(request) -> dict[str, object]:
+        return {
+            "public": True,
+            "authenticated": bool(request.auth and request.auth.is_authenticated),
+        }
+
+    @app.route.get("/me", summary="Authenticated identity", tags=["auth"], auth=True, response_model=dict[str, object])
+    async def me_route(request) -> dict[str, object]:
+        assert request.auth is not None
+        assert request.identity is not None
+        return {
+            "subject": request.identity.subject,
+            "display_name": request.identity.display_name,
+            "roles": sorted(request.identity.roles),
+            "scopes": sorted(request.identity.scopes),
+            "backend": request.auth.backend,
+            "scheme": request.auth.scheme,
+        }
+
+    @app.route.get(
+        "/admin",
+        summary="Admin-only route",
+        tags=["auth"],
+        auth=RequireScope("admin"),
+        response_model=dict[str, str],
+    )
+    async def admin_route(request) -> dict[str, str]:
+        assert request.identity is not None
+        return {
+            "subject": request.identity.subject,
+            "access": "admin",
         }
 
     @app.route.post(

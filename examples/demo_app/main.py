@@ -20,6 +20,9 @@ def main() -> None:
 
     print("Demo app is configured for the native tasgi HTTP/2 prototype.")
     print("Use: curl --http2-prior-knowledge http://127.0.0.1:8000/")
+    print("Public auth demo: curl --http2-prior-knowledge http://127.0.0.1:8000/public")
+    print("Bearer auth demo: curl --http2-prior-knowledge -H 'Authorization: Bearer demo-token' http://127.0.0.1:8000/me")
+    print("Admin auth demo: curl --http2-prior-knowledge -H 'Authorization: Bearer admin-token' http://127.0.0.1:8000/admin")
     print("OpenAPI JSON: http://127.0.0.1:8000/openapi.json")
     print("Swagger UI: http://127.0.0.1:8000/docs")
     print("WebSocket demo endpoint: ws://127.0.0.1:8000/ws")

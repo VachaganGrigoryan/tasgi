@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from .types import ASGIScope, Header
 
 if TYPE_CHECKING:
     from .app import TasgiApp
+    from .auth.models import AuthContext, Identity
 
 
 _MISSING = object()
@@ -27,6 +28,7 @@ class Request:
     body: bytes = b""
     http_version: str = "1.1"
     route_params: dict[str, str] = field(default_factory=dict)
+    auth: Optional["AuthContext"] = None
     scope: ASGIScope = field(default_factory=dict)
 
     @classmethod
@@ -48,8 +50,14 @@ class Request:
             body=body,
             http_version=str(scope.get("http_version", "1.1")),
             route_params=dict(route_params or {}),
+            auth=None,
             scope=scope,
         )
+
+    def with_auth(self, auth: "AuthContext") -> "Request":
+        """Return a request copy with resolved auth attached."""
+
+        return replace(self, auth=auth)
 
     def text(self, encoding: str = "utf-8") -> str:
         """Decode the buffered request body as text."""
@@ -82,3 +90,17 @@ class Request:
         if default is _MISSING:
             return self.app.require_service(name)
         return self.app.get_service(name, default)
+
+    @property
+    def identity(self) -> Optional["Identity"]:
+        """Return the resolved request identity when authentication succeeded."""
+
+        if self.auth is None:
+            return None
+        return self.auth.identity
+
+    @property
+    def user(self) -> Optional["Identity"]:
+        """Compatibility alias for the resolved request identity."""
+
+        return self.identity

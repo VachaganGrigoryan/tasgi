@@ -1,5 +1,16 @@
 """Public tasgi API."""
 
+from .auth import (
+    APIKeyBackend,
+    AuthBackend,
+    AuthContext,
+    AuthPolicy,
+    BearerTokenBackend,
+    Identity,
+    RequireAuthenticated,
+    RequireRole,
+    RequireScope,
+)
 from .app import App, TasgiApp
 from .asgi_server import ASGIServer
 from .config import TasgiConfig
@@ -15,19 +26,28 @@ from .state import AppState
 from .websocket import WebSocket
 
 __all__ = [
+    "APIKeyBackend",
     "ASGIServer",
     "ASYNC_EXECUTION",
     "APP_SCOPE",
     "AppState",
     "App",
+    "AuthBackend",
+    "AuthContext",
+    "AuthPolicy",
+    "BearerTokenBackend",
     "Depends",
     "ExceptionMiddleware",
+    "Identity",
     "LoggingMiddleware",
     "OpenAPIDocs",
     "Request",
     "Response",
     "Router",
     "REQUEST_SCOPE",
+    "RequireAuthenticated",
+    "RequireRole",
+    "RequireScope",
     "StreamingResponse",
     "TasgiApp",
     "TasgiConfig",

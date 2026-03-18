@@ -86,6 +86,8 @@ class Router:
         self._websocket_static_routes: dict[str, Route] = {}
         self._websocket_param_routes: dict[int, list[_WebSocketParamRoute]] = {}
         self._default_metadata = _build_route_metadata(
+            auth=None,
+            auth_backend=None,
             metadata=metadata,
             summary=None,
             description=None,
@@ -173,6 +175,8 @@ class Router:
         *,
         methods: Optional[list[str]] = None,
         execution: Optional[ExecutionPolicy] = None,
+        auth: Any = None,
+        auth_backend: Any = None,
         metadata: Optional[dict[str, Any]] = None,
         summary: Optional[str] = None,
         description: Optional[str] = None,
@@ -190,6 +194,8 @@ class Router:
 
         resolved_methods = list(methods or ["GET"])
         route_metadata = _build_route_metadata(
+            auth=auth,
+            auth_backend=auth_backend,
             metadata=metadata,
             summary=summary,
             description=description,
@@ -221,6 +227,8 @@ class Router:
         path: str,
         *,
         execution: Optional[ExecutionPolicy] = None,
+        auth: Any = None,
+        auth_backend: Any = None,
         metadata: Optional[dict[str, Any]] = None,
         summary: Optional[str] = None,
         description: Optional[str] = None,
@@ -240,6 +248,8 @@ class Router:
             path,
             methods=["GET"],
             execution=execution,
+            auth=auth,
+            auth_backend=auth_backend,
             metadata=metadata,
             summary=summary,
             description=description,
@@ -259,6 +269,8 @@ class Router:
         path: str,
         *,
         execution: Optional[ExecutionPolicy] = None,
+        auth: Any = None,
+        auth_backend: Any = None,
         metadata: Optional[dict[str, Any]] = None,
         summary: Optional[str] = None,
         description: Optional[str] = None,
@@ -278,6 +290,8 @@ class Router:
             path,
             methods=["POST"],
             execution=execution,
+            auth=auth,
+            auth_backend=auth_backend,
             metadata=metadata,
             summary=summary,
             description=description,
@@ -297,6 +311,8 @@ class Router:
         path: str,
         *,
         execution: Optional[ExecutionPolicy] = None,
+        auth: Any = None,
+        auth_backend: Any = None,
         metadata: Optional[dict[str, Any]] = None,
         summary: Optional[str] = None,
         description: Optional[str] = None,
@@ -316,6 +332,8 @@ class Router:
             path,
             methods=["PUT"],
             execution=execution,
+            auth=auth,
+            auth_backend=auth_backend,
             metadata=metadata,
             summary=summary,
             description=description,
@@ -335,6 +353,8 @@ class Router:
         path: str,
         *,
         execution: Optional[ExecutionPolicy] = None,
+        auth: Any = None,
+        auth_backend: Any = None,
         metadata: Optional[dict[str, Any]] = None,
         summary: Optional[str] = None,
         description: Optional[str] = None,
@@ -354,6 +374,8 @@ class Router:
             path,
             methods=["DELETE"],
             execution=execution,
+            auth=auth,
+            auth_backend=auth_backend,
             metadata=metadata,
             summary=summary,
             description=description,
@@ -565,6 +587,8 @@ def _same_route_shape(
 
 def _build_route_metadata(
     *,
+    auth: Any = None,
+    auth_backend: Any = None,
     metadata: Optional[dict[str, Any]],
     summary: Optional[str],
     description: Optional[str],
@@ -579,6 +603,10 @@ def _build_route_metadata(
     include_in_schema: bool,
 ) -> dict[str, Any]:
     route_metadata = dict(metadata or {})
+    if auth is not None:
+        route_metadata["auth"] = auth
+    if auth_backend is not None:
+        route_metadata["auth_backend"] = auth_backend
     if summary is not None:
         route_metadata["summary"] = summary
     if description is not None:

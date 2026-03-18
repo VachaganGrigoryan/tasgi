@@ -7,6 +7,10 @@ from contextlib import asynccontextmanager
 import inspect
 from typing import Any, Optional
 
+from .auth.base import AuthBackend, AuthPolicy
+from .auth.exceptions import AuthenticationFailed, AuthenticationRequired, PermissionDenied
+from .auth.models import AuthContext
+from .auth.policies import RequireAuthenticated
 from .asgi import build_request, receive_request_body, send_response, validate_http_scope
 from .config import TasgiConfig
 from .dependencies import DependencyResolver
@@ -55,6 +59,8 @@ class TasgiApp:
         config: Optional[TasgiConfig] = None,
         *,
         runtime: Optional[TasgiRuntime] = None,
+        auth_backend: Optional[AuthBackend] = None,
+        auth_policy: Optional[AuthPolicy] = None,
         **config_overrides,
     ):
         """Create a tasgi application with config, state, router, and runtime."""
@@ -75,6 +81,8 @@ class TasgiApp:
         self._shutdown_lock: Optional[asyncio.Lock] = None
         self._middleware: list[Middleware] = []
         self._docs: Optional[OpenAPIDocs] = None
+        self._auth_backend = auth_backend
+        self._auth_policy = auth_policy or RequireAuthenticated()
         self._route_api = _AppRouteRegistrar(self)
         self._lifecycle_state = "created"
         self._started = False
@@ -120,6 +128,8 @@ class TasgiApp:
         *,
         methods: Optional[list[str]] = None,
         execution: Optional[ExecutionPolicy] = None,
+        auth: Any = None,
+        auth_backend: Any = None,
         metadata: Optional[dict[str, object]] = None,
         summary: Optional[str] = None,
         description: Optional[str] = None,
@@ -141,6 +151,8 @@ class TasgiApp:
             path,
             methods=methods,
             execution=execution,
+            auth=auth,
+            auth_backend=auth_backend,
             metadata=metadata,
             summary=summary,
             description=description,
@@ -177,6 +189,18 @@ class TasgiApp:
             return handler
 
         return decorator
+
+    def set_auth_backend(self, backend: Optional[AuthBackend]) -> Optional[AuthBackend]:
+        """Set the default auth backend used by protected routes."""
+
+        self._auth_backend = backend
+        return backend
+
+    def set_auth_policy(self, policy: AuthPolicy) -> AuthPolicy:
+        """Set the default auth policy used by ``auth=True`` routes."""
+
+        self._auth_policy = policy
+        return policy
 
     def include_router(self, router: Router, *, prefix: str = "") -> None:
         """Register routes from another router, optionally under a shared prefix."""
@@ -387,6 +411,7 @@ class TasgiApp:
                 raise HTTPError(404, "Not Found")
 
             request = build_request(self, scope, body, route_params=route_match.route_params)
+            request = await self._authenticate_request(route_match.route, request)
             response = await self._dispatch(route_match.route, request)
         except HTTPError as exc:
             response = self._http_error_response(exc)
@@ -488,6 +513,68 @@ class TasgiApp:
                 "Async handlers cannot declare execution='thread'; use 'async' or make the handler sync."
             )
         del path
+
+    async def _authenticate_request(self, route: Route, request) -> Any:
+        auth_setting = route.metadata.get("auth")
+        backend = route.metadata.get("auth_backend") or self._auth_backend
+
+        if auth_setting is False:
+            return request.with_auth(AuthContext.anonymous())
+
+        policy: Optional[AuthPolicy]
+        if isinstance(auth_setting, AuthPolicy):
+            policy = auth_setting
+        elif isinstance(auth_setting, AuthBackend):
+            backend = auth_setting
+            policy = self._auth_policy
+        elif auth_setting is True:
+            policy = self._auth_policy
+        elif auth_setting is None:
+            if route.metadata.get("auth_backend") is not None:
+                policy = self._auth_policy
+            else:
+                return request.with_auth(AuthContext.anonymous())
+        else:
+            raise TypeError("Route auth configuration must be bool, AuthPolicy, or AuthBackend.")
+
+        if backend is None:
+            raise RuntimeError("Protected route %s requires an auth backend." % route.path)
+
+        auth = await self._call_auth_backend(backend, request)
+        if auth is None:
+            auth = AuthContext.anonymous()
+        request = request.with_auth(auth)
+
+        if policy is not None:
+            try:
+                await self._call_auth_policy(policy, request, auth)
+            except AuthenticationRequired as exc:
+                raise HTTPError(401, str(exc) or "Unauthorized") from exc
+            except AuthenticationFailed as exc:
+                raise HTTPError(401, str(exc) or "Unauthorized") from exc
+            except PermissionDenied as exc:
+                raise HTTPError(403, str(exc) or "Forbidden") from exc
+
+        return request
+
+    async def _call_auth_backend(self, backend: AuthBackend, request) -> Optional[AuthContext]:
+        result = await self._call_auth_callable(backend.authenticate, request)
+        if result is None:
+            return None
+        if isinstance(result, AuthContext):
+            return result
+        raise TypeError("Auth backends must return AuthContext or None.")
+
+    async def _call_auth_policy(self, policy: AuthPolicy, request, auth: AuthContext) -> Any:
+        return await self._call_auth_callable(policy.authorize, request, auth)
+
+    async def _call_auth_callable(self, func, *args) -> Any:
+        if inspect.iscoroutinefunction(func):
+            return await func(*args)
+        result = await self._runtime.run_sync(func, *args)
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
     def _http_error_response(self, exc: HTTPError) -> Response:
         return TextResponse(
