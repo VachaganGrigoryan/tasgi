@@ -328,7 +328,7 @@ class TasgiApp:
     def openapi_schema(self) -> dict[str, object]:
         """Generate an OpenAPI document from the registered HTTP routes."""
 
-        return self.docs.generate(self.router)
+        return self.docs.generate(self.router, default_auth_backend=self._auth_backend)
 
     def middleware(self, func: Middleware) -> Middleware:
         """Decorator form for registering middleware."""

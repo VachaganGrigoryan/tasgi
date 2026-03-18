@@ -20,6 +20,16 @@ class AuthBackend:
 
         raise NotImplementedError
 
+    def openapi_security_scheme_name(self) -> str:
+        """Return the OpenAPI security scheme name for this backend."""
+
+        return "%sAuth" % self.name.replace("-", "_")
+
+    def openapi_security_scheme(self) -> Optional[dict[str, Any]]:
+        """Return an OpenAPI security scheme definition when available."""
+
+        return None
+
 
 class AuthPolicy:
     """Base policy that authorizes one already-authenticated request."""

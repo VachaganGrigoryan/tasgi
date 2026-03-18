@@ -6,6 +6,7 @@ import inspect
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from .auth.base import AuthBackend, AuthPolicy
 from .response import JsonResponse, Response, StreamingResponse, TextResponse
 from .routing import Route, Router
 from .schema import JSONSchema, get_callable_type_hints, infer_json_schema
@@ -77,13 +78,23 @@ class OpenAPIDocs:
             description=description,
         )
 
-    def generate(self, router: Router) -> dict[str, Any]:
+    def generate(
+        self,
+        router: Router,
+        *,
+        default_auth_backend: Optional[AuthBackend] = None,
+    ) -> dict[str, Any]:
         paths: dict[str, dict[str, Any]] = {}
+        security_schemes: dict[str, dict[str, Any]] = {}
         for route in router.iter_routes(scope_type="http"):
             if route.metadata.get("include_in_schema", True) is False:
                 continue
             path_item = paths.setdefault(route.path, {})
-            path_item[route.method.lower()] = self._build_operation(route)
+            path_item[route.method.lower()] = self._build_operation(
+                route,
+                default_auth_backend=default_auth_backend,
+                security_schemes=security_schemes,
+            )
 
         document: dict[str, Any] = {
             "openapi": "3.1.0",
@@ -95,6 +106,10 @@ class OpenAPIDocs:
         }
         if self.description:
             document["info"]["description"] = self.description
+        if security_schemes:
+            document["components"] = {
+                "securitySchemes": security_schemes,
+            }
         return document
 
     def swagger_ui_html(self, *, openapi_url: str, title: Optional[str] = None) -> str:
@@ -129,7 +144,13 @@ class OpenAPIDocs:
 </html>
 """.format(title=_escape_html(ui_title), openapi_url=_escape_html(openapi_url))
 
-    def _build_operation(self, route: Route) -> dict[str, Any]:
+    def _build_operation(
+        self,
+        route: Route,
+        *,
+        default_auth_backend: Optional[AuthBackend],
+        security_schemes: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
         operation: dict[str, Any] = {
             "responses": self._build_responses(route),
         }
@@ -165,6 +186,14 @@ class OpenAPIDocs:
             }
             if request_schema.description is not None:
                 operation["requestBody"]["description"] = request_schema.description
+
+        security = self._security_for_route(
+            route,
+            default_auth_backend=default_auth_backend,
+            security_schemes=security_schemes,
+        )
+        if security is not None:
+            operation["security"] = security
 
         operation["x-tasgi-execution"] = route.execution or ("async" if route.is_async else "thread")
         return operation
@@ -250,6 +279,44 @@ class OpenAPIDocs:
             infer_json_schema(model),
             media_type,
         )
+
+    def _security_for_route(
+        self,
+        route: Route,
+        *,
+        default_auth_backend: Optional[AuthBackend],
+        security_schemes: dict[str, dict[str, Any]],
+    ) -> Optional[list[dict[str, list[Any]]]]:
+        auth_setting = route.metadata.get("auth")
+        route_backend = route.metadata.get("auth_backend")
+
+        if auth_setting is False:
+            return []
+
+        backend: Optional[AuthBackend]
+        if isinstance(auth_setting, AuthBackend):
+            backend = auth_setting
+        elif isinstance(route_backend, AuthBackend):
+            backend = route_backend
+        elif auth_setting is True or isinstance(auth_setting, AuthPolicy):
+            backend = default_auth_backend
+        elif auth_setting is None:
+            if route_backend is None:
+                return None
+            backend = default_auth_backend if not isinstance(route_backend, AuthBackend) else route_backend
+        else:
+            return None
+
+        if backend is None:
+            return None
+
+        scheme = backend.openapi_security_scheme()
+        if scheme is None:
+            return None
+
+        scheme_name = backend.openapi_security_scheme_name()
+        security_schemes.setdefault(scheme_name, dict(scheme))
+        return [{scheme_name: []}]
 
 
 def _infer_request_model(handler) -> Any:

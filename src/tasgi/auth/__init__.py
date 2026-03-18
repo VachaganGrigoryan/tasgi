@@ -1,6 +1,6 @@
 """Public auth API for tasgi."""
 
-from .backends import APIKeyBackend, BearerTokenBackend
+from .backends import APIKeyBackend, BasicAuthBackend, BearerTokenBackend
 from .base import AuthBackend, AuthPolicy
 from .exceptions import AuthError, AuthenticationFailed, AuthenticationRequired, PermissionDenied
 from .models import AuthContext, Identity
@@ -14,6 +14,7 @@ __all__ = [
     "AuthPolicy",
     "AuthenticationFailed",
     "AuthenticationRequired",
+    "BasicAuthBackend",
     "BearerTokenBackend",
     "Identity",
     "PermissionDenied",

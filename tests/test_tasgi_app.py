@@ -19,8 +19,10 @@ from tasgi import (
     ASYNC_EXECUTION,
     APP_SCOPE,
     BearerTokenBackend,
+    BasicAuthBackend,
     THREAD_EXECUTION,
     AppState,
+    AuthBackend,
     Depends,
     ExceptionMiddleware,
     Identity,
@@ -485,6 +487,79 @@ class TasgiDocsTests(unittest.IsolatedAsyncioTestCase):
             operation["responses"]["200"]["content"]["application/json"]["schema"]["additionalProperties"]["type"],
             "string",
         )
+
+    def test_openapi_includes_auth_security_schemes_automatically(self) -> None:
+        app = TasgiApp(
+            auth_backend=BearerTokenBackend(
+                lambda token: Identity(subject=token),
+                bearer_format="JWT",
+                description="Demo bearer auth",
+            )
+        )
+        api_key_backend = APIKeyBackend(
+            lambda key: Identity(subject=key),
+            header_name="x-service-key",
+            description="Service API key",
+        )
+        basic_backend = BasicAuthBackend(
+            lambda username, password: Identity(subject=username) if password == "secret" else None,
+            description="Basic auth demo",
+        )
+
+        class CustomBackend(AuthBackend):
+            name = "custom"
+
+            def authenticate(self, request):
+                del request
+                return None
+
+            def openapi_security_scheme_name(self) -> str:
+                return "customGateway"
+
+            def openapi_security_scheme(self):
+                return {
+                    "type": "apiKey",
+                    "in": "header",
+                    "name": "x-custom-auth",
+                    "description": "Custom gateway auth",
+                }
+
+        @app.route.get("/public", auth=False)
+        async def public_route(request) -> TextResponse:
+            return TextResponse("public")
+
+        @app.route.get("/me", auth=True)
+        async def me(request) -> TextResponse:
+            return TextResponse("me")
+
+        @app.route.get("/service", auth=True, auth_backend=api_key_backend)
+        async def service(request) -> TextResponse:
+            return TextResponse("service")
+
+        @app.route.get("/basic", auth=True, auth_backend=basic_backend)
+        async def basic(request) -> TextResponse:
+            return TextResponse("basic")
+
+        @app.route.get("/custom", auth=True, auth_backend=CustomBackend())
+        async def custom(request) -> TextResponse:
+            return TextResponse("custom")
+
+        document = app.openapi_schema()
+        schemes = document["components"]["securitySchemes"]
+
+        self.assertEqual(schemes["bearerAuth"]["type"], "http")
+        self.assertEqual(schemes["bearerAuth"]["scheme"], "bearer")
+        self.assertEqual(schemes["bearerAuth"]["bearerFormat"], "JWT")
+        self.assertEqual(schemes["apiKeyAuth"]["type"], "apiKey")
+        self.assertEqual(schemes["apiKeyAuth"]["name"], "x-service-key")
+        self.assertEqual(schemes["basicAuth"]["scheme"], "basic")
+        self.assertEqual(schemes["customGateway"]["name"], "x-custom-auth")
+
+        self.assertEqual(document["paths"]["/public"]["get"]["security"], [])
+        self.assertEqual(document["paths"]["/me"]["get"]["security"], [{"bearerAuth": []}])
+        self.assertEqual(document["paths"]["/service"]["get"]["security"], [{"apiKeyAuth": []}])
+        self.assertEqual(document["paths"]["/basic"]["get"]["security"], [{"basicAuth": []}])
+        self.assertEqual(document["paths"]["/custom"]["get"]["security"], [{"customGateway": []}])
 
     async def test_typed_body_parameter_and_model_return_are_coerced_automatically(self) -> None:
         @dataclass
