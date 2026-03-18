@@ -8,11 +8,14 @@ version = "0.1.0a1"
 description = "Experimental thread-aware ASGI framework and runtime prototype."
 readme = "README.md"
 requires-python = ">=3.9"
+license = {file = "LICENSE"}
+authors = [{name = "Vachagan"}]
 dependencies = []
 keywords = ["asgi", "asyncio", "threads", "http", "websocket", "openapi"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.9",
@@ -30,6 +33,7 @@ tasgi = "tasgi.main:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+license-files = ["LICENSE", "NOTICE"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

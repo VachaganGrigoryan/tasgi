@@ -241,6 +241,13 @@ python3 benchmarks/run_benchmarks.py
 - no dependency injection container beyond explicit lightweight helpers
 - no production-hardening claims
 
+## License
+
+`tasgi` is licensed under Apache-2.0. See `LICENSE` and `NOTICE`.
+
+That keeps the project free to use, including in companies, while preserving
+the attribution notices when the software is redistributed.
+
 ## Release Notes
 
 This repository is currently prepared for an alpha-style release, not a stable release.
@@ -248,6 +255,5 @@ This repository is currently prepared for an alpha-style release, not a stable r
 Before a public non-alpha release, the project still needs:
 
 - final public API freeze
-- declared license metadata
 - repository/homepage URLs in package metadata
 - a TestPyPI install-and-verify pass
