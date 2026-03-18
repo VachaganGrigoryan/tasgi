@@ -9,6 +9,7 @@ from .request import Request
 from .response import JsonResponse, Response, TextResponse
 from .runtime import ASYNC_EXECUTION, THREAD_EXECUTION, TasgiRuntime
 from .state import AppState
+from .websocket import WebSocket
 
 __all__ = [
     "ASGIServer",
@@ -24,6 +25,7 @@ __all__ = [
     "TasgiRuntime",
     "TextResponse",
     "TimingMiddleware",
+    "WebSocket",
     "JsonResponse",
     "THREAD_EXECUTION",
     "run",

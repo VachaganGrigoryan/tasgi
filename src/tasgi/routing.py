@@ -20,6 +20,7 @@ class Route:
     handler: Handler
     is_async: bool
     execution: Optional[ExecutionPolicy]
+    scope_type: str = "http"
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -62,12 +63,22 @@ class _ParamRouteGroup:
         return params
 
 
+@dataclass
+class _WebSocketParamRoute:
+    """One parameterized WebSocket route entry."""
+
+    group: _ParamRouteGroup
+    route: Route
+
+
 class Router:
     """Exact-first router with path params and 404/405 support."""
 
     def __init__(self) -> None:
-        self._static_routes: dict[str, dict[str, Route]] = {}
-        self._param_routes: dict[int, list[_ParamRouteGroup]] = {}
+        self._http_static_routes: dict[str, dict[str, Route]] = {}
+        self._http_param_routes: dict[int, list[_ParamRouteGroup]] = {}
+        self._websocket_static_routes: dict[str, Route] = {}
+        self._websocket_param_routes: dict[int, list[_WebSocketParamRoute]] = {}
 
     def add_route(
         self,
@@ -76,22 +87,49 @@ class Router:
         handler: Handler,
         execution: Optional[ExecutionPolicy] = None,
         metadata: Optional[dict[str, Any]] = None,
+        *,
+        scope_type: str = "http",
     ) -> None:
         """Register one handler for one or more HTTP methods."""
 
         _validate_route_path(path)
-        if not methods:
+        if scope_type == "http" and not methods:
             raise ValueError("Route registration requires at least one HTTP method.")
+        if scope_type not in {"http", "websocket"}:
+            raise ValueError("Unsupported route scope type %r." % scope_type)
 
         route_metadata = dict(metadata or {})
         is_async = inspect.iscoroutinefunction(handler)
         route_segments = _split_path(path)
         param_names = _extract_param_names(route_segments, path)
 
+        if scope_type == "websocket":
+            route = Route(
+                path=path,
+                method="WEBSOCKET",
+                handler=handler,
+                is_async=is_async,
+                execution=execution,
+                scope_type="websocket",
+                metadata=dict(route_metadata),
+            )
+            if any(name is not None for name in param_names):
+                self._add_websocket_param_route(path, route_segments, param_names, route)
+            else:
+                if path in self._websocket_static_routes:
+                    raise ValueError("Route already registered for WEBSOCKET %s." % path)
+                self._websocket_static_routes[path] = route
+            return
+
         if any(name is not None for name in param_names):
-            method_map = self._get_or_create_param_group(path, route_segments, param_names).methods
+            method_map = self._get_or_create_param_group(
+                self._http_param_routes,
+                path,
+                route_segments,
+                param_names,
+            ).methods
         else:
-            method_map = self._static_routes.setdefault(path, {})
+            method_map = self._http_static_routes.setdefault(path, {})
 
         for method in methods:
             normalized_method = method.upper()
@@ -105,6 +143,7 @@ class Router:
                 handler=handler,
                 is_async=is_async,
                 execution=execution,
+                scope_type="http",
                 metadata=dict(route_metadata),
             )
 
@@ -113,14 +152,14 @@ class Router:
 
         normalized_method = method.upper()
 
-        static_method_map = self._static_routes.get(path)
+        static_method_map = self._http_static_routes.get(path)
         if static_method_map is not None:
             route = static_method_map.get(normalized_method)
             if route is not None:
                 return RouteMatch(route=route, allowed_methods=[normalized_method])
             return RouteMatch(route=None, allowed_methods=sorted(static_method_map))
 
-        param_groups = self._param_routes.get(len(_split_path(path)), [])
+        param_groups = self._http_param_routes.get(len(_split_path(path)), [])
         for group in param_groups:
             route_params = group.match(path)
             if route_params is None:
@@ -137,13 +176,73 @@ class Router:
 
         return RouteMatch(route=None, allowed_methods=[])
 
-    def _get_or_create_param_group(
+    def add_websocket(
+        self,
+        path: str,
+        handler: Handler,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> None:
+        """Register one WebSocket handler."""
+
+        self.add_route(
+            path,
+            [],
+            handler,
+            execution=None,
+            metadata=metadata,
+            scope_type="websocket",
+        )
+
+    def resolve_websocket(self, path: str) -> RouteMatch:
+        """Resolve a WebSocket path into a route or a not-found result."""
+
+        route = self._websocket_static_routes.get(path)
+        if route is not None:
+            return RouteMatch(route=route, allowed_methods=[])
+
+        for param_route in self._websocket_param_routes.get(len(_split_path(path)), []):
+            route_params = param_route.group.match(path)
+            if route_params is not None:
+                return RouteMatch(
+                    route=param_route.route,
+                    allowed_methods=[],
+                    route_params=route_params,
+                )
+
+        return RouteMatch(route=None, allowed_methods=[])
+
+    def _add_websocket_param_route(
         self,
         path: str,
         segments: tuple[str, ...],
         param_names: tuple[Optional[str], ...],
+        route: Route,
+    ) -> None:
+        routes = self._websocket_param_routes.setdefault(len(segments), [])
+        for existing in routes:
+            group = existing.group
+            if group.segments == segments and group.param_names == param_names:
+                raise ValueError("Route already registered for WEBSOCKET %s." % path)
+            if _same_route_shape(group.segments, segments):
+                raise ValueError(
+                    "Ambiguous parameter route %s conflicts with %s." % (path, group.path)
+                )
+
+        routes.append(
+            _WebSocketParamRoute(
+                group=_ParamRouteGroup(path=path, segments=segments, param_names=param_names),
+                route=route,
+            )
+        )
+
+    def _get_or_create_param_group(
+        self,
+        store: dict[int, list[_ParamRouteGroup]],
+        path: str,
+        segments: tuple[str, ...],
+        param_names: tuple[Optional[str], ...],
     ) -> _ParamRouteGroup:
-        groups = self._param_routes.setdefault(len(segments), [])
+        groups = store.setdefault(len(segments), [])
         for group in groups:
             if group.segments == segments and group.param_names == param_names:
                 return group

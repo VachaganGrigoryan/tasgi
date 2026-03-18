@@ -16,6 +16,7 @@ from .response import Response, TextResponse
 from .routing import Handler, Route, Router
 from .runtime import ASYNC_EXECUTION, THREAD_EXECUTION, ExecutionPolicy, TasgiRuntime, validate_execution_policy
 from .state import AppState
+from .websocket import WebSocket
 
 
 class TasgiApp:
@@ -115,6 +116,22 @@ class TasgiApp:
         """Register a POST handler."""
 
         return self.route(path, methods=["POST"], execution=execution, metadata=metadata)
+
+    def websocket(
+        self,
+        path: str,
+        *,
+        metadata: Optional[dict[str, object]] = None,
+    ):
+        """Register an async WebSocket handler."""
+
+        def decorator(handler: Handler):
+            if not inspect.iscoroutinefunction(handler):
+                raise ValueError("tasgi WebSocket handlers must be async.")
+            self.router.add_websocket(path, handler, metadata=metadata)
+            return handler
+
+        return decorator
 
     def on_startup(self, func):
         """Register a startup hook."""
@@ -216,6 +233,11 @@ class TasgiApp:
         """ASGI entrypoint used by the transport layer."""
 
         await self.startup()
+        scope_type = scope.get("type")
+        if scope_type == "websocket":
+            await self._handle_websocket(scope, receive, send)
+            return
+
         response: Response
         request = None
         try:
@@ -236,6 +258,36 @@ class TasgiApp:
             response = self._internal_error_response(exc, request=request)
 
         await send_response(send, response)
+
+    async def _handle_websocket(self, scope, receive, send) -> None:
+        route_match = self.router.resolve_websocket(str(scope["path"]))
+        websocket = WebSocket.from_scope(
+            self,
+            scope,
+            receive,
+            send,
+            route_params=route_match.route_params,
+        )
+
+        if route_match.route is None:
+            await websocket.close(code=1008, reason="Not Found")
+            return
+
+        try:
+            result = await route_match.route.handler(websocket)
+            if result is not None:
+                raise TypeError("tasgi WebSocket handlers must return None.")
+        except Exception as exc:
+            if not websocket.closed:
+                if self.config.debug:
+                    reason = "%s: %s" % (exc.__class__.__name__, exc)
+                else:
+                    reason = ""
+                await websocket.close(code=1011, reason=reason)
+            return
+
+        if not websocket.closed:
+            await websocket.close(code=1000)
 
     async def _dispatch(self, route: Route, request) -> Response:
         endpoint = self._build_middleware_chain(route)

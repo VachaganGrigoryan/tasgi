@@ -99,6 +99,18 @@ def build_demo_app() -> TasgiApp:
     def error_route(request):
         raise RuntimeError("demo error")
 
+    @app.websocket("/ws")
+    async def websocket_echo(websocket) -> None:
+        await websocket.accept()
+        while True:
+            message = await websocket.receive()
+            if message["type"] == "websocket.disconnect":
+                break
+            if "text" in message:
+                await websocket.send_text("echo:%s" % message["text"])
+            elif "bytes" in message:
+                await websocket.send_bytes(b"echo:" + bytes(message["bytes"]))
+
     return app
 
 

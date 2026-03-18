@@ -27,6 +27,22 @@ from .http2 import (
 )
 from .http_parser import HTTPParseError, parse_http_request, parse_request_head
 from .types import ASGIApp, ASGIMessage, ASGIScope, Header, Receive, RequestData, Send
+from .wsproto import (
+    OPCODE_BINARY,
+    OPCODE_CLOSE,
+    OPCODE_PING,
+    OPCODE_PONG,
+    OPCODE_TEXT,
+    WebSocketProtocolError,
+    build_accept_token,
+    build_handshake_response,
+    build_rejection_response,
+    decode_close_payload,
+    encode_close_payload,
+    encode_frame as encode_websocket_frame,
+    is_websocket_upgrade,
+    read_frame as read_websocket_frame,
+)
 
 
 class ASGIServerError(RuntimeError):
@@ -163,12 +179,13 @@ class ASGIServer:
     async def handle_connection(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
-        """Dispatch one socket connection as HTTP/1.1 or HTTP/2."""
+        """Dispatch one socket connection as HTTP/1.1, HTTP/2, or WebSocket."""
 
         transport = _AsyncioStreamTransport(writer)
         client = writer.get_extra_info("peername")
         server_info = writer.get_extra_info("sockname")
         is_http2 = False
+        is_websocket = False
         try:
             is_http2, initial_bytes = await self._read_connection_prefix(reader)
             if is_http2:
@@ -180,21 +197,38 @@ class ASGIServer:
                     preface_already_read=True,
                 )
             else:
-                raw_request = await self._read_raw_request(reader, initial_bytes=initial_bytes)
-                await self.handle_raw_request(
-                    raw_request,
-                    client=client,
-                    server=server_info,
-                    transport=transport,
+                raw_request, extra_bytes = await self._read_raw_request_parts(
+                    reader,
+                    initial_bytes=initial_bytes,
                 )
+                request = parse_http_request(raw_request)
+                if is_websocket_upgrade(request):
+                    is_websocket = True
+                    await self.handle_websocket_request(
+                        request,
+                        reader,
+                        client=client,
+                        server=server_info,
+                        transport=transport,
+                        initial_bytes=extra_bytes,
+                    )
+                else:
+                    await self.handle_http_request(
+                        request,
+                        client=client,
+                        server=server_info,
+                        transport=transport,
+                    )
         except HTTPParseError as exc:
-            if not is_http2:
+            if not is_http2 and not is_websocket:
                 transport.write(_build_error_response(400, str(exc)))
                 await transport.drain()
         except HTTP2ProtocolError:
             pass
+        except WebSocketProtocolError:
+            pass
         except Exception:
-            if not is_http2:
+            if not is_http2 and not is_websocket:
                 transport.write(_build_error_response(500, "Internal Server Error"))
                 await transport.drain()
         finally:
@@ -219,6 +253,31 @@ class ASGIServer:
             transport=transport,
         )
 
+    async def handle_websocket_bytes(
+        self,
+        raw_request: bytes,
+        frame_bytes: bytes = b"",
+        *,
+        client: Optional[Tuple[str, int]] = None,
+        server: Optional[Tuple[str, int]] = None,
+    ) -> bytes:
+        """Handle one in-memory WebSocket upgrade request for compatibility tests."""
+
+        request = parse_http_request(raw_request)
+        reader = asyncio.StreamReader()
+        if frame_bytes:
+            reader.feed_data(frame_bytes)
+        reader.feed_eof()
+        transport = BufferingTransport()
+        await self.handle_websocket_request(
+            request,
+            reader,
+            client=client,
+            server=server,
+            transport=transport,
+        )
+        return transport.getvalue()
+
     async def handle_http_request(
         self,
         request: RequestData,
@@ -237,6 +296,127 @@ class ASGIServer:
             receive,
             lambda queue: self._drain_http1_response_messages(queue, active_transport),
         )
+
+        if isinstance(active_transport, BufferingTransport):
+            return active_transport.getvalue()
+        return b""
+
+    async def handle_websocket_request(
+        self,
+        request: RequestData,
+        reader: asyncio.StreamReader,
+        *,
+        client: Optional[Tuple[str, int]] = None,
+        server: Optional[Tuple[str, int]] = None,
+        transport: Optional[WritableTransport] = None,
+        initial_bytes: bytes = b"",
+    ) -> bytes:
+        """Handle one HTTP/1.1 WebSocket upgrade request."""
+
+        if not is_websocket_upgrade(request):
+            raise WebSocketProtocolError("Request is not a supported WebSocket upgrade.")
+
+        active_transport = transport or BufferingTransport()
+        websocket_key = _require_header(request.headers, b"sec-websocket-key").decode("ascii")
+        scope = self._build_websocket_scope(request, client=client, server=server)
+        receive_queue: asyncio.Queue[ASGIMessage] = asyncio.Queue()
+        await receive_queue.put({"type": "websocket.connect"})
+
+        accepted = False
+        closed = False
+
+        merged_reader = asyncio.StreamReader()
+        if initial_bytes:
+            merged_reader.feed_data(initial_bytes)
+
+        async def receive() -> ASGIMessage:
+            return await receive_queue.get()
+
+        async def send(message: ASGIMessage) -> None:
+            nonlocal accepted, closed
+            message_type = message.get("type")
+
+            if message_type == "websocket.accept":
+                if accepted:
+                    raise ASGIServerError("Received duplicate websocket.accept message.")
+                response = build_handshake_response(
+                    build_accept_token(websocket_key),
+                    subprotocol=message.get("subprotocol"),
+                    headers=list(message.get("headers", [])),
+                )
+                active_transport.write(response)
+                await active_transport.drain()
+                accepted = True
+                return
+
+            if message_type == "websocket.send":
+                if not accepted:
+                    raise ASGIServerError("Received websocket.send before websocket.accept.")
+                if closed:
+                    raise ASGIServerError("Received websocket.send after websocket.close.")
+                text = message.get("text")
+                binary = message.get("bytes")
+                if text is not None and binary is not None:
+                    raise ASGIServerError("WebSocket send messages must use text or bytes, not both.")
+                if text is not None:
+                    payload = str(text).encode("utf-8")
+                    active_transport.write(encode_websocket_frame(OPCODE_TEXT, payload))
+                elif binary is not None:
+                    active_transport.write(encode_websocket_frame(OPCODE_BINARY, bytes(binary)))
+                else:
+                    raise ASGIServerError("WebSocket send messages must include text or bytes.")
+                await active_transport.drain()
+                return
+
+            if message_type == "websocket.close":
+                close_code = int(message.get("code", 1000))
+                reason = str(message.get("reason", ""))
+                if not accepted:
+                    active_transport.write(build_rejection_response())
+                    await active_transport.drain()
+                    closed = True
+                    return
+                if not closed:
+                    active_transport.write(
+                        encode_websocket_frame(
+                            OPCODE_CLOSE,
+                            encode_close_payload(close_code, reason),
+                        )
+                    )
+                    await active_transport.drain()
+                    closed = True
+                return
+
+            raise ASGIServerError(f"Unsupported ASGI message type: {message_type!r}")
+
+        pump_task = asyncio.create_task(self._pump_reader(reader, merged_reader))
+        reader_task = asyncio.create_task(
+            self._read_websocket_messages(
+                merged_reader,
+                active_transport,
+                receive_queue,
+                lambda: accepted,
+                lambda: closed,
+            )
+        )
+        app_task = asyncio.create_task(self.app(scope, receive, send))
+
+        try:
+            await app_task
+            if not closed:
+                await send({"type": "websocket.close", "code": 1000, "reason": ""})
+        except Exception:
+            if not closed:
+                try:
+                    await send({"type": "websocket.close", "code": 1011, "reason": ""})
+                except Exception:
+                    pass
+            raise
+        finally:
+            await _cancel_task(reader_task)
+            await asyncio.gather(reader_task, return_exceptions=True)
+            await _cancel_task(pump_task)
+            await asyncio.gather(pump_task, return_exceptions=True)
 
         if isinstance(active_transport, BufferingTransport):
             return active_transport.getvalue()
@@ -465,6 +645,65 @@ class ASGIServer:
         finally:
             await queue.put(None)
 
+    async def _read_websocket_messages(
+        self,
+        reader: asyncio.StreamReader,
+        transport: WritableTransport,
+        queue: asyncio.Queue[ASGIMessage],
+        is_accepted: Callable[[], bool],
+        is_closed: Callable[[], bool],
+    ) -> None:
+        while True:
+            try:
+                frame = await read_websocket_frame(reader)
+            except asyncio.IncompleteReadError:
+                await queue.put({"type": "websocket.disconnect", "code": 1006})
+                return
+            except WebSocketProtocolError:
+                await queue.put({"type": "websocket.disconnect", "code": 1002})
+                return
+
+            if frame.opcode == OPCODE_TEXT:
+                await queue.put(
+                    {
+                        "type": "websocket.receive",
+                        "text": frame.payload.decode("utf-8"),
+                    }
+                )
+                continue
+
+            if frame.opcode == OPCODE_BINARY:
+                await queue.put({"type": "websocket.receive", "bytes": frame.payload})
+                continue
+
+            if frame.opcode == OPCODE_PING:
+                if is_accepted() and not is_closed():
+                    transport.write(encode_websocket_frame(OPCODE_PONG, frame.payload))
+                    await transport.drain()
+                continue
+
+            if frame.opcode == OPCODE_CLOSE:
+                code, _ = decode_close_payload(frame.payload)
+                if is_accepted() and not is_closed():
+                    transport.write(encode_websocket_frame(OPCODE_CLOSE, frame.payload))
+                    await transport.drain()
+                await queue.put({"type": "websocket.disconnect", "code": code})
+                return
+
+            raise WebSocketProtocolError("Unsupported WebSocket opcode %d." % frame.opcode)
+
+    async def _pump_reader(
+        self,
+        source: asyncio.StreamReader,
+        destination: asyncio.StreamReader,
+    ) -> None:
+        while True:
+            chunk = await source.read(65_536)
+            if not chunk:
+                destination.feed_eof()
+                return
+            destination.feed_data(chunk)
+
     async def _read_connection_prefix(self, reader: asyncio.StreamReader) -> tuple[bool, bytes]:
         buffer = bytearray()
         while len(buffer) < len(CLIENT_CONNECTION_PREFACE):
@@ -478,12 +717,12 @@ class ASGIServer:
                 return True, bytes(buffer)
         return bytes(buffer) == CLIENT_CONNECTION_PREFACE, bytes(buffer)
 
-    async def _read_raw_request(
+    async def _read_raw_request_parts(
         self,
         reader: asyncio.StreamReader,
         *,
         initial_bytes: bytes = b"",
-    ) -> bytes:
+    ) -> tuple[bytes, bytes]:
         buffer = bytearray(initial_bytes)
         delimiter = b"\r\n\r\n"
 
@@ -499,7 +738,16 @@ class ASGIServer:
         body = rest
         if len(body) < head.content_length:
             body += await reader.readexactly(head.content_length - len(body))
-        return raw_head + body[: head.content_length]
+        return raw_head + body[: head.content_length], body[head.content_length :]
+
+    async def _read_raw_request(
+        self,
+        reader: asyncio.StreamReader,
+        *,
+        initial_bytes: bytes = b"",
+    ) -> bytes:
+        raw_request, _ = await self._read_raw_request_parts(reader, initial_bytes=initial_bytes)
+        return raw_request
 
     def _build_scope(
         self,
@@ -520,6 +768,27 @@ class ASGIServer:
             "headers": list(request.headers),
             "client": client,
             "server": server,
+        }
+
+    def _build_websocket_scope(
+        self,
+        request: RequestData,
+        *,
+        client: Optional[Tuple[str, int]],
+        server: Optional[Tuple[str, int]],
+    ) -> ASGIScope:
+        return {
+            "type": "websocket",
+            "asgi": {"version": "3.0", "spec_version": "2.3"},
+            "http_version": request.http_version,
+            "scheme": "ws" if request.scheme == "http" else "wss",
+            "path": request.path,
+            "raw_path": request.path.encode("ascii"),
+            "query_string": request.query_string,
+            "headers": list(request.headers),
+            "client": client,
+            "server": server,
+            "subprotocols": [],
         }
 
     def _build_receive(self, request: RequestData) -> Receive:
@@ -650,6 +919,14 @@ def _normalize_response_headers(headers: list[Header]) -> list[Header]:
             raise ASGIServerError("Response headers must be bytes pairs.")
         normalized.append((name.lower(), value))
     return normalized
+
+
+def _require_header(headers: list[Header], name: bytes) -> bytes:
+    lowered_name = name.lower()
+    for header_name, value in headers:
+        if header_name == lowered_name:
+            return value
+    raise WebSocketProtocolError("Missing required WebSocket header %s." % name.decode("ascii"))
 
 
 def _build_error_response(status: int, message: str) -> bytes:

@@ -20,6 +20,7 @@ def main() -> None:
 
     print("Demo app is configured to require HTTP/2.")
     print("Use: curl --http2-prior-knowledge http://127.0.0.1:8000/")
+    print("WebSocket demo endpoint: ws://127.0.0.1:8000/ws")
     run(app)
 
 
