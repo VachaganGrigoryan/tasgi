@@ -8,6 +8,7 @@ import time
 from tasgi import (
     THREAD_EXECUTION,
     JsonResponse,
+    Response,
     StreamingResponse,
     TimingMiddleware,
     TasgiApp,
@@ -54,6 +55,11 @@ def build_demo_app() -> TasgiApp:
         http2=True,
     )
     app.add_middleware(TimingMiddleware())
+    app.configure_docs(
+        title="tasgi demo app",
+        version="0.1.0",
+        description="Example tasgi application demonstrating threading, streaming, HTTP/2, and WebSocket features.",
+    )
     # app.add_middleware(require_http2)
 
     @app.on_startup
@@ -64,12 +70,12 @@ def build_demo_app() -> TasgiApp:
     def shutdown(app_instance) -> None:
         app_instance.remove_service("message_service")
 
-    @app.get("/")
+    @app.get("/", metadata={"summary": "Home", "tags": ["demo"]})
     async def home(request) -> TextResponse:
         message_service = request.service("message_service")
         return TextResponse("%s over HTTP/%s" % (message_service.message, request.http_version))
 
-    @app.get("/json")
+    @app.get("/json", metadata={"summary": "JSON response", "tags": ["demo"]})
     async def json_route(request) -> JsonResponse:
         message_service = request.service("message_service")
         return JsonResponse(
@@ -80,20 +86,27 @@ def build_demo_app() -> TasgiApp:
             }
         )
 
-    @app.post("/echo")
+    @app.post(
+        "/echo",
+        metadata={
+            "summary": "Echo request body",
+            "description": "Return the incoming request body as plain text.",
+            "tags": ["demo"],
+        },
+    )
     def echo(request) -> TextResponse:
         return TextResponse(request.text())
 
-    @app.get("/sleep")
+    @app.get("/sleep", metadata={"summary": "Blocking sleep", "tags": ["thread"]})
     def sleep_route(request) -> TextResponse:
         time.sleep(1.0)
         return TextResponse("slept for 1.0 seconds")
 
-    @app.get("/cpu")
+    @app.get("/cpu", metadata={"summary": "CPU-heavy thread route", "tags": ["thread"]})
     def cpu_route(request) -> TextResponse:
         return TextResponse("CPU result: %s" % cpu_demo_work())
 
-    @app.get("/stream")
+    @app.get("/stream", metadata={"summary": "Async streaming response", "tags": ["streaming"]})
     async def stream_route(request) -> StreamingResponse:
         async def chunks():
             yield "async "
@@ -102,18 +115,43 @@ def build_demo_app() -> TasgiApp:
 
         return StreamingResponse(chunks(), media_type="text/plain; charset=utf-8")
 
-    @app.get("/thread-stream")
+    @app.get(
+        "/thread-stream",
+        metadata={"summary": "Threaded streaming response", "tags": ["streaming", "thread"]},
+    )
     def thread_stream_route(request) -> StreamingResponse:
         def chunks():
-            yield "thread -------- "
+            yield "thread "
             time.sleep(0.05)
             yield "stream"
 
         return StreamingResponse(chunks(), media_type="text/plain; charset=utf-8")
 
-    @app.get("/error")
+    @app.get("/error", metadata={"summary": "Raise demo exception", "tags": ["demo"]})
     def error_route(request):
         raise RuntimeError("demo error")
+
+    @app.get(
+        "/openapi.json",
+        metadata={
+            "summary": "OpenAPI document",
+            "description": "Generated OpenAPI schema for the demo app.",
+            "tags": ["docs"],
+        },
+    )
+    async def openapi_route(request) -> JsonResponse:
+        return JsonResponse(app.openapi_schema())
+
+    @app.get(
+        "/docs",
+        metadata={
+            "summary": "Swagger UI",
+            "description": "Interactive Swagger UI for the generated OpenAPI schema.",
+            "tags": ["docs"],
+        },
+    )
+    async def docs_route(request) -> Response:
+        return Response(_swagger_ui_html(), media_type="text/html; charset=utf-8")
 
     @app.websocket("/ws")
     async def websocket_echo(websocket) -> None:
@@ -127,7 +165,85 @@ def build_demo_app() -> TasgiApp:
             elif "bytes" in message:
                 await websocket.send_bytes(b"echo:" + bytes(message["bytes"]))
 
+    app.register_request_schema(
+        "/echo",
+        "POST",
+        {"type": "string", "example": '{"a":1}'},
+        media_type="text/plain",
+        description="Raw request body echoed back by the server.",
+    )
+    app.register_response_schema(
+        "/",
+        "GET",
+        200,
+        {"type": "string"},
+        media_type="text/plain",
+        description="Plain-text hello response.",
+    )
+    app.register_response_schema(
+        "/json",
+        "GET",
+        200,
+        {
+            "type": "object",
+            "properties": {
+                "framework": {"type": "string"},
+                "message": {"type": "string"},
+                "http_version": {"type": "string"},
+            },
+            "required": ["framework", "message", "http_version"],
+        },
+    )
+    for path in ["/echo", "/sleep", "/cpu", "/stream", "/thread-stream", "/error"]:
+        app.register_response_schema(
+            path,
+            "POST" if path == "/echo" else "GET",
+            200 if path != "/error" else 500,
+            {"type": "string"},
+            media_type="text/plain",
+        )
+    app.register_response_schema("/openapi.json", "GET", 200, {"type": "object"})
+    app.register_response_schema(
+        "/docs",
+        "GET",
+        200,
+        {"type": "string"},
+        media_type="text/html",
+    )
+
     return app
+
+
+def _swagger_ui_html() -> str:
+    return """<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>tasgi demo docs</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
+    <style>
+      body { margin: 0; background: #faf7f1; }
+      .topbar { display: none; }
+    </style>
+  </head>
+  <body>
+    <div id="swagger-ui"></div>
+    <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+    <script>
+      window.onload = function () {
+        window.ui = SwaggerUIBundle({
+          url: "/openapi.json",
+          dom_id: "#swagger-ui",
+          deepLinking: true,
+          displayRequestDuration: true,
+          presets: [SwaggerUIBundle.presets.apis]
+        });
+      };
+    </script>
+  </body>
+</html>
+"""
 
 
 app = build_demo_app()

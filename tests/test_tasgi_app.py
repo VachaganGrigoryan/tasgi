@@ -275,6 +275,94 @@ class TasgiRoutingAndRequestTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(route)
         self.assertEqual(route.metadata, {"name": "user-post-detail"})
 
+
+class TasgiDocsTests(unittest.IsolatedAsyncioTestCase):
+    def test_openapi_schema_collects_route_metadata_and_registered_schemas(self) -> None:
+        app = TasgiApp()
+        app.configure_docs(title="Demo API", version="1.2.0", description="Demo docs")
+
+        @app.get(
+            "/users/{id}",
+            metadata={
+                "summary": "Get user",
+                "description": "Return one user",
+                "tags": ["users"],
+                "operation_id": "getUser",
+            },
+        )
+        async def get_user(request) -> JsonResponse:
+            return JsonResponse({"id": request.route_params["id"]})
+
+        @app.post("/users", metadata={"summary": "Create user"})
+        def create_user(request) -> JsonResponse:
+            return JsonResponse({"created": True}, status_code=201)
+
+        @app.websocket("/ws")
+        async def websocket_route(websocket) -> None:
+            await websocket.accept()
+            await websocket.close()
+
+        app.register_request_schema(
+            "/users",
+            "POST",
+            {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
+            description="User create payload",
+        )
+        app.register_response_schema(
+            "/users/{id}",
+            "GET",
+            200,
+            {"type": "object", "properties": {"id": {"type": "string"}}},
+            description="User payload",
+        )
+        app.register_response_schema(
+            "/users",
+            "POST",
+            201,
+            {"type": "object", "properties": {"created": {"type": "boolean"}}},
+        )
+
+        document = app.openapi_schema()
+
+        self.assertEqual(document["openapi"], "3.1.0")
+        self.assertEqual(document["info"]["title"], "Demo API")
+        self.assertEqual(document["info"]["version"], "1.2.0")
+        self.assertEqual(document["info"]["description"], "Demo docs")
+        self.assertNotIn("/ws", document["paths"])
+
+        get_operation = document["paths"]["/users/{id}"]["get"]
+        self.assertEqual(get_operation["summary"], "Get user")
+        self.assertEqual(get_operation["description"], "Return one user")
+        self.assertEqual(get_operation["tags"], ["users"])
+        self.assertEqual(get_operation["operationId"], "getUser")
+        self.assertEqual(get_operation["parameters"][0]["name"], "id")
+        self.assertEqual(get_operation["responses"]["200"]["description"], "User payload")
+        self.assertEqual(
+            get_operation["responses"]["200"]["content"]["application/json"]["schema"]["type"],
+            "object",
+        )
+
+        post_operation = document["paths"]["/users"]["post"]
+        self.assertEqual(post_operation["summary"], "Create user")
+        self.assertTrue(post_operation["requestBody"]["required"])
+        self.assertEqual(post_operation["requestBody"]["description"], "User create payload")
+        self.assertEqual(
+            post_operation["requestBody"]["content"]["application/json"]["schema"]["required"],
+            ["name"],
+        )
+        self.assertEqual(post_operation["responses"]["201"]["description"], "HTTP 201 response")
+        self.assertEqual(post_operation["x-tasgi-execution"], THREAD_EXECUTION)
+
+    def test_openapi_schema_defaults_to_success_response_without_explicit_docs(self) -> None:
+        app = TasgiApp()
+
+        @app.get("/")
+        async def home(request) -> TextResponse:
+            return TextResponse("home")
+
+        document = app.openapi_schema()
+        self.assertEqual(document["paths"]["/"]["get"]["responses"], {"200": {"description": "Successful Response"}})
+
     async def test_exact_route_wins_before_param_route(self) -> None:
         app = TasgiApp()
 

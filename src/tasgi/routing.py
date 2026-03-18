@@ -211,6 +211,21 @@ class Router:
 
         return RouteMatch(route=None, allowed_methods=[])
 
+    def iter_routes(self, *, scope_type: Optional[str] = None) -> list[Route]:
+        """Return registered routes for optional inspection or documentation."""
+
+        routes: list[Route] = []
+        if scope_type in {None, "http"}:
+            for method_map in self._http_static_routes.values():
+                routes.extend(method_map.values())
+            for groups in self._http_param_routes.values():
+                for group in groups:
+                    routes.extend(group.methods.values())
+        if scope_type in {None, "websocket"}:
+            routes.extend(self._websocket_static_routes.values())
+            routes.extend(param_route.route for groups in self._websocket_param_routes.values() for param_route in groups)
+        return sorted(routes, key=lambda route: (route.scope_type, route.path, route.method))
+
     def _add_websocket_param_route(
         self,
         path: str,

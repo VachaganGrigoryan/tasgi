@@ -9,6 +9,7 @@ from typing import Optional
 
 from .asgi import build_request, receive_request_body, send_response, validate_http_scope
 from .config import TasgiConfig
+from .docs import OpenAPIDocs
 from .exceptions import HTTPError, MethodNotAllowed
 from .lifecycle import LifecycleManager
 from .middleware import Middleware, NextHandler, is_async_middleware
@@ -45,6 +46,7 @@ class TasgiApp:
         self._startup_lock: Optional[asyncio.Lock] = None
         self._shutdown_lock: Optional[asyncio.Lock] = None
         self._middleware: list[Middleware] = []
+        self._docs: Optional[OpenAPIDocs] = None
         self._lifecycle_state = "created"
         self._started = False
         self._closed = False
@@ -60,6 +62,14 @@ class TasgiApp:
         """Return the current lifecycle state."""
 
         return self._lifecycle_state
+
+    @property
+    def docs(self) -> OpenAPIDocs:
+        """Lazily create the optional OpenAPI docs registry."""
+
+        if self._docs is None:
+            self._docs = OpenAPIDocs()
+        return self._docs
 
     @property
     def started(self) -> bool:
@@ -170,6 +180,71 @@ class TasgiApp:
             raise ValueError("tasgi middleware must be async.")
         self._middleware.append(middleware)
         return middleware
+
+    def configure_docs(
+        self,
+        *,
+        title: Optional[str] = None,
+        version: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> OpenAPIDocs:
+        """Configure the optional OpenAPI document metadata."""
+
+        docs = self.docs
+        if title is not None:
+            docs.title = title
+        if version is not None:
+            docs.version = version
+        if description is not None:
+            docs.description = description
+        return docs
+
+    def register_request_schema(
+        self,
+        path: str,
+        method: str,
+        schema: dict[str, object],
+        *,
+        media_type: str = "application/json",
+        required: bool = True,
+        description: Optional[str] = None,
+    ) -> None:
+        """Register a request-body schema for OpenAPI generation."""
+
+        self.docs.register_request_schema(
+            path,
+            method,
+            schema,
+            media_type=media_type,
+            required=required,
+            description=description,
+        )
+
+    def register_response_schema(
+        self,
+        path: str,
+        method: str,
+        status_code: int,
+        schema: dict[str, object],
+        *,
+        media_type: str = "application/json",
+        description: Optional[str] = None,
+    ) -> None:
+        """Register one response schema for OpenAPI generation."""
+
+        self.docs.register_response_schema(
+            path,
+            method,
+            status_code,
+            schema,
+            media_type=media_type,
+            description=description,
+        )
+
+    def openapi_schema(self) -> dict[str, object]:
+        """Generate an OpenAPI document from the registered HTTP routes."""
+
+        return self.docs.generate(self.router)
 
     def middleware(self, func: Middleware) -> Middleware:
         """Decorator form for registering middleware."""
