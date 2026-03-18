@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 from tasgi import (
     THREAD_EXECUTION,
     JsonResponse,
+    StreamingResponse,
     TimingMiddleware,
     TasgiApp,
     TextResponse,
@@ -90,6 +92,24 @@ def build_demo_app() -> TasgiApp:
     @app.get("/cpu")
     def cpu_route(request) -> TextResponse:
         return TextResponse("CPU result: %s" % cpu_demo_work())
+
+    @app.get("/stream")
+    async def stream_route(request) -> StreamingResponse:
+        async def chunks():
+            yield "async "
+            await asyncio.sleep(0.05)
+            yield "stream"
+
+        return StreamingResponse(chunks(), media_type="text/plain; charset=utf-8")
+
+    @app.get("/thread-stream")
+    def thread_stream_route(request) -> StreamingResponse:
+        def chunks():
+            yield "thread -------- "
+            time.sleep(0.05)
+            yield "stream"
+
+        return StreamingResponse(chunks(), media_type="text/plain; charset=utf-8")
 
     @app.get("/error")
     def error_route(request):

@@ -6,7 +6,7 @@ from .config import TasgiConfig
 from .main import run, serve
 from .middleware import ExceptionMiddleware, LoggingMiddleware, TimingMiddleware
 from .request import Request
-from .response import JsonResponse, Response, TextResponse
+from .response import JsonResponse, Response, StreamingResponse, TextResponse
 from .runtime import ASYNC_EXECUTION, THREAD_EXECUTION, TasgiRuntime
 from .state import AppState
 from .websocket import WebSocket
@@ -20,6 +20,7 @@ __all__ = [
     "LoggingMiddleware",
     "Request",
     "Response",
+    "StreamingResponse",
     "TasgiApp",
     "TasgiConfig",
     "TasgiRuntime",

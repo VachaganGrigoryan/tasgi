@@ -47,7 +47,7 @@ async def receive_request_body(receive, max_request_body_size: int) -> bytes:
 async def send_response(send: Send, response: Response) -> None:
     """Emit a complete ASGI HTTP response."""
 
-    for message in response.to_asgi_messages():
+    async for message in response.iter_asgi_messages():
         await send(message)
 
 

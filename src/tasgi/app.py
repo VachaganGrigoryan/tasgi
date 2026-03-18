@@ -12,7 +12,7 @@ from .config import TasgiConfig
 from .exceptions import HTTPError, MethodNotAllowed
 from .lifecycle import LifecycleManager
 from .middleware import Middleware, NextHandler, is_async_middleware
-from .response import Response, TextResponse
+from .response import Response, StreamingResponse, TextResponse
 from .routing import Handler, Route, Router
 from .runtime import ASYNC_EXECUTION, THREAD_EXECUTION, ExecutionPolicy, TasgiRuntime, validate_execution_policy
 from .state import AppState
@@ -306,6 +306,8 @@ class TasgiApp:
             result = await route.handler(request)
         else:
             result = await self._runtime.run_sync(route.handler, request)
+            if isinstance(result, StreamingResponse):
+                result.bind_thread_runtime(self._runtime)
 
         if not isinstance(result, Response):
             raise TypeError("tasgi handlers must return Response objects.")

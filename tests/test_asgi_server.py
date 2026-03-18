@@ -12,11 +12,20 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from tasgi.asgi_server import ASGIServer, ASGIServerError
+from tasgi.asgi_server import ASGIServer, ASGIServerError, REQUEST_BODY_CHUNK_SIZE
 
 
 def build_raw_request(path: str = "/") -> bytes:
     return f"GET {path} HTTP/1.1\r\nHost: example.test\r\n\r\n".encode("ascii")
+
+
+def build_post_request(path: str, body: bytes) -> bytes:
+    return (
+        f"POST {path} HTTP/1.1\r\nHost: example.test\r\nContent-Length: {len(body)}\r\n\r\n".encode(
+            "ascii"
+        )
+        + body
+    )
 
 
 class ASGIServerTests(unittest.IsolatedAsyncioTestCase):
@@ -74,6 +83,55 @@ class ASGIServerTests(unittest.IsolatedAsyncioTestCase):
 
         response = await ASGIServer(app).handle_raw_request(build_raw_request("/body"))
         self.assertTrue(response.endswith(b"\r\n\r\npayload"))
+
+    async def test_request_body_is_delivered_in_multiple_http_request_messages(self) -> None:
+        body = b"x" * (REQUEST_BODY_CHUNK_SIZE + 10)
+
+        async def app(scope, receive, send) -> None:
+            first = await receive()
+            second = await receive()
+            third = await receive()
+
+            self.assertEqual(first["type"], "http.request")
+            self.assertTrue(first["more_body"])
+            self.assertEqual(len(first["body"]), REQUEST_BODY_CHUNK_SIZE)
+            self.assertEqual(second["type"], "http.request")
+            self.assertFalse(second["more_body"])
+            self.assertEqual(second["body"], body[REQUEST_BODY_CHUNK_SIZE:])
+            self.assertEqual(third["type"], "http.disconnect")
+
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"ok", "more_body": False})
+
+        response = await ASGIServer(app).handle_raw_request(build_post_request("/stream", body))
+        self.assertTrue(response.endswith(b"\r\n\r\nok"))
+
+    async def test_streaming_response_body_is_written_in_multiple_messages(self) -> None:
+        async def app(scope, receive, send) -> None:
+            await receive()
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [(b"content-length", b"11")],
+                }
+            )
+            await send({"type": "http.response.body", "body": b"hello ", "more_body": True})
+            await send({"type": "http.response.body", "body": b"world", "more_body": False})
+
+        response = await ASGIServer(app).handle_raw_request(build_raw_request("/stream-body"))
+        self.assertTrue(response.endswith(b"\r\n\r\nhello world"))
+
+    async def test_streaming_response_uses_chunked_transfer_when_length_unknown(self) -> None:
+        async def app(scope, receive, send) -> None:
+            await receive()
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"hello", "more_body": True})
+            await send({"type": "http.response.body", "body": b" world", "more_body": False})
+
+        response = await ASGIServer(app).handle_raw_request(build_raw_request("/chunked"))
+        self.assertIn(b"transfer-encoding: chunked\r\n", response)
+        self.assertTrue(response.endswith(b"\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n"))
 
     async def test_empty_final_body_is_still_a_complete_response(self) -> None:
         async def app(scope, receive, send) -> None:

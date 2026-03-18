@@ -54,6 +54,9 @@ class WritableTransport(Protocol):
         """Flush any buffered writes."""
 
 
+REQUEST_BODY_CHUNK_SIZE = 64 * 1024
+
+
 @dataclass
 class BufferingTransport:
     """In-memory transport used by tests and internal request helpers."""
@@ -115,6 +118,22 @@ class _HTTP2ConnectionWriter:
         async with self.write_lock:
             self.transport.write(headers_frame)
             self.transport.write(data_frame)
+            await self.transport.drain()
+
+    async def send_response_start(self, stream_id: int, status: int, headers: list[Header]) -> None:
+        """Write only the HTTP/2 response HEADERS frame for one stream."""
+
+        normalized_headers = _normalize_response_headers(headers)
+        response_headers = [(b":status", str(status).encode("ascii"))] + normalized_headers
+        async with self.write_lock:
+            self.transport.write(encode_headers_frame(stream_id, response_headers, end_stream=False))
+            await self.transport.drain()
+
+    async def send_response_body(self, stream_id: int, body: bytes, *, end_stream: bool) -> None:
+        """Write one HTTP/2 DATA frame for an existing stream response."""
+
+        async with self.write_lock:
+            self.transport.write(encode_data_frame(stream_id, body, end_stream=end_stream))
             await self.transport.drain()
 
     async def _write_bytes(self, data: bytes) -> None:
@@ -761,17 +780,27 @@ class ASGIServer:
         }
 
     def _build_receive(self, request: RequestData) -> Receive:
-        delivered = False
+        body = request.body
+        offset = 0
+        delivered_disconnect = False
 
         async def receive() -> ASGIMessage:
-            nonlocal delivered
-            if not delivered:
-                delivered = True
+            nonlocal offset, delivered_disconnect
+            if offset < len(body) or (offset == 0 and body == b""):
+                chunk = body[offset : offset + REQUEST_BODY_CHUNK_SIZE]
+                offset += len(chunk)
+                more_body = offset < len(body)
+                if body == b"":
+                    offset = 1
+                    more_body = False
                 return {
                     "type": "http.request",
-                    "body": request.body,
-                    "more_body": False,
+                    "body": chunk,
+                    "more_body": more_body,
                 }
+            if delivered_disconnect:
+                return {"type": "http.disconnect"}
+            delivered_disconnect = True
             return {"type": "http.disconnect"}
 
         return receive
@@ -805,9 +834,74 @@ class ASGIServer:
         queue: asyncio.Queue[Optional[ASGIMessage]],
         transport: WritableTransport,
     ) -> None:
-        status, headers, body = await self._collect_complete_response(queue)
-        transport.write(serialize_http_response(status, headers, body))
-        await transport.drain()
+        start_message: Optional[ASGIMessage] = None
+        headers_written = False
+        chunked = False
+        response_complete = False
+
+        while True:
+            message = await queue.get()
+            if message is None:
+                break
+
+            message_type = message.get("type")
+            if message_type == "http.response.start":
+                if start_message is not None:
+                    raise ASGIServerError("Received duplicate http.response.start message.")
+                start_message = message
+                continue
+
+            if message_type != "http.response.body":
+                raise ASGIServerError(f"Unsupported ASGI message type: {message_type!r}")
+            if start_message is None:
+                raise ASGIServerError("Received http.response.body before http.response.start.")
+
+            body = _coerce_response_body(message.get("body", b""))
+            more_body = bool(message.get("more_body", False))
+            status = int(start_message["status"])
+            headers = list(start_message.get("headers", []))
+
+            if not headers_written:
+                if _has_header(headers, b"content-length"):
+                    transport.write(serialize_http_response_head(status, headers))
+                    headers_written = True
+                elif not more_body:
+                    transport.write(serialize_http_response(status, headers, body))
+                    await transport.drain()
+                    response_complete = True
+                    break
+                else:
+                    transport.write(
+                        serialize_http_response_head(
+                            status,
+                            headers + [(b"transfer-encoding", b"chunked")],
+                        )
+                    )
+                    headers_written = True
+                    chunked = True
+                    await transport.drain()
+
+            if chunked:
+                if body:
+                    transport.write(_encode_chunked_http1_body(body))
+                if not more_body:
+                    transport.write(_encode_chunked_http1_end())
+                    await transport.drain()
+                    response_complete = True
+                    break
+                if body:
+                    await transport.drain()
+                continue
+
+            if body:
+                transport.write(body)
+            await transport.drain()
+            if not more_body:
+                response_complete = True
+                break
+
+        if start_message is None or not response_complete:
+            raise ASGIServerError("ASGI app did not send a complete HTTP response.")
 
     async def _drain_http2_response_messages(
         self,
@@ -815,15 +909,8 @@ class ASGIServer:
         connection_writer: _HTTP2ConnectionWriter,
         stream_id: int,
     ) -> None:
-        status, headers, body = await self._collect_complete_response(queue)
-        await connection_writer.send_response(stream_id, status, headers, body)
-
-    async def _collect_complete_response(
-        self,
-        queue: asyncio.Queue[Optional[ASGIMessage]],
-    ) -> tuple[int, list[Header], bytes]:
         start_message: Optional[ASGIMessage] = None
-        body_parts: list[bytes] = []
+        headers_written = False
         response_complete = False
 
         while True:
@@ -840,14 +927,21 @@ class ASGIServer:
 
             if message_type == "http.response.body":
                 if start_message is None:
-                    raise ASGIServerError(
-                        "Received http.response.body before http.response.start."
-                    )
-                body = message.get("body", b"")
-                if not isinstance(body, (bytes, bytearray)):
-                    raise ASGIServerError("Response body must be bytes.")
-                body_parts.append(bytes(body))
-                if not message.get("more_body", False):
+                    raise ASGIServerError("Received http.response.body before http.response.start.")
+
+                body = _coerce_response_body(message.get("body", b""))
+                more_body = bool(message.get("more_body", False))
+                status = int(start_message["status"])
+                headers = list(start_message.get("headers", []))
+
+                if not headers_written:
+                    if not more_body and not _has_header(headers, b"content-length"):
+                        headers = headers + [(b"content-length", str(len(body)).encode("ascii"))]
+                    await connection_writer.send_response_start(stream_id, status, headers)
+                    headers_written = True
+
+                await connection_writer.send_response_body(stream_id, body, end_stream=not more_body)
+                if not more_body:
                     response_complete = True
                     break
                 continue
@@ -857,28 +951,32 @@ class ASGIServer:
         if start_message is None or not response_complete:
             raise ASGIServerError("ASGI app did not send a complete HTTP response.")
 
-        return (
-            int(start_message["status"]),
-            list(start_message.get("headers", [])),
-            b"".join(body_parts),
-        )
-
 
 def serialize_http_response(status: int, headers: list[Header], body: bytes) -> bytes:
     """Serialize an HTTP/1.1 response from ASGI-style fields."""
 
     normalized_headers = _normalize_response_headers(headers)
-    if not any(name == b"content-length" for name, _ in normalized_headers):
+    if not _has_header(normalized_headers, b"content-length"):
         normalized_headers.append((b"content-length", str(len(body)).encode("ascii")))
 
-    try:
-        reason = HTTPStatus(status).phrase
-    except ValueError:
-        reason = "Unknown"
+    return serialize_http_response_head(status, normalized_headers) + body
 
+
+def serialize_http_response_head(status: int, headers: list[Header]) -> bytes:
+    """Serialize only the HTTP/1.1 response head."""
+
+    normalized_headers = _normalize_response_headers(headers)
+    reason = _http_reason_phrase(status)
     head_lines = [f"HTTP/1.1 {status} {reason}".encode("ascii")]
     head_lines.extend(name + b": " + value for name, value in normalized_headers)
-    return b"\r\n".join(head_lines) + b"\r\n\r\n" + body
+    return b"\r\n".join(head_lines) + b"\r\n\r\n"
+
+
+def _http_reason_phrase(status: int) -> str:
+    try:
+        return HTTPStatus(status).phrase
+    except ValueError:
+        return "Unknown"
 
 
 def _normalize_response_headers(headers: list[Header]) -> list[Header]:
@@ -888,6 +986,25 @@ def _normalize_response_headers(headers: list[Header]) -> list[Header]:
             raise ASGIServerError("Response headers must be bytes pairs.")
         normalized.append((name.lower(), value))
     return normalized
+
+
+def _has_header(headers: list[Header], name: bytes) -> bool:
+    lowered_name = name.lower()
+    return any(header_name == lowered_name for header_name, _ in headers)
+
+
+def _coerce_response_body(body) -> bytes:
+    if not isinstance(body, (bytes, bytearray)):
+        raise ASGIServerError("Response body must be bytes.")
+    return bytes(body)
+
+
+def _encode_chunked_http1_body(body: bytes) -> bytes:
+    return f"{len(body):X}".encode("ascii") + b"\r\n" + body + b"\r\n"
+
+
+def _encode_chunked_http1_end() -> bytes:
+    return b"0\r\n\r\n"
 
 
 def _require_header(headers: list[Header], name: bytes) -> bytes:

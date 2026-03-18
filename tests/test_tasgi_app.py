@@ -22,6 +22,7 @@ from tasgi import (
     LoggingMiddleware,
     TasgiApp,
     TasgiConfig,
+    StreamingResponse,
     TextResponse,
     TimingMiddleware,
 )
@@ -422,6 +423,50 @@ class TasgiRoutingAndRequestTests(unittest.IsolatedAsyncioTestCase):
 
 
 class TasgiExecutionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_async_streaming_response_is_sent_in_multiple_body_messages(self) -> None:
+        app = TasgiApp()
+
+        @app.get("/stream")
+        async def stream_route(request) -> StreamingResponse:
+            async def chunks():
+                yield "hello "
+                await asyncio.sleep(0)
+                yield "world"
+
+            return StreamingResponse(chunks())
+
+        try:
+            response = await ASGIServer(app).handle_raw_request(build_get_request("/stream"))
+        finally:
+            await app.close()
+
+        self.assertIn(b"transfer-encoding: chunked\r\n", response)
+        self.assertTrue(response.endswith(b"\r\n\r\n6\r\nhello \r\n5\r\nworld\r\n0\r\n\r\n"))
+
+    async def test_threaded_streaming_response_iterates_in_worker_thread(self) -> None:
+        app = TasgiApp(config=TasgiConfig(default_execution=THREAD_EXECUTION))
+        loop_thread_id = threading.get_ident()
+        generator_thread_ids: list[int] = []
+
+        @app.get("/stream")
+        def stream_route(request) -> StreamingResponse:
+            def chunks():
+                generator_thread_ids.append(threading.get_ident())
+                yield b"thread "
+                generator_thread_ids.append(threading.get_ident())
+                yield b"stream"
+
+            return StreamingResponse(chunks())
+
+        try:
+            response = await ASGIServer(app).handle_raw_request(build_get_request("/stream"))
+        finally:
+            await app.close()
+
+        self.assertIn(b"thread", response)
+        self.assertEqual(len(generator_thread_ids), 2)
+        self.assertTrue(all(thread_id != loop_thread_id for thread_id in generator_thread_ids))
+
     async def test_async_handlers_run_on_event_loop_and_sync_handlers_run_in_threads(self) -> None:
         app = TasgiApp(config=TasgiConfig(default_execution=ASYNC_EXECUTION))
         loop_thread_id = threading.get_ident()
