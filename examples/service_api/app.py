@@ -8,6 +8,7 @@ import json
 
 from models import (
     ActivityEventOut,
+    CpuCheckOut,
     CreateOrderIn,
     DemoOverviewOut,
     HealthOut,
@@ -19,7 +20,13 @@ from models import (
     RebuildIndexOut,
     SessionOut,
 )
-from services import ActivityService, CatalogService, OpsService, OrdersService
+from services import (
+    ActivityService,
+    CatalogService,
+    OpsService,
+    OrdersService,
+    deterministic_cpu_job,
+)
 from tasgi import (
     APP_SCOPE,
     BearerTokenBackend,
@@ -308,6 +315,29 @@ def build_app() -> TasgiApp:
     ) -> list[ActivityEventOut]:
         del request
         return activity.recent(limit=12)
+
+    @ops_router.get(
+        "/cpu-check",
+        summary="Run a deterministic CPU-heavy verification route",
+        auth=RequireScope("metrics"),
+        response_model=CpuCheckOut,
+    )
+    def cpu_check_route(
+        request,
+        activity=Depends(get_activity, scope=APP_SCOPE),
+    ) -> CpuCheckOut:
+        del request
+        iterations = 320_000
+        checksum = deterministic_cpu_job(iterations)
+        activity.record(
+            "ops.cpu_check",
+            "Completed CPU verification workload (%s iterations)." % iterations,
+        )
+        return CpuCheckOut(
+            job="cpu-check",
+            iterations=iterations,
+            checksum=checksum,
+        )
 
     @ops_router.get("/events/stream", summary="Realtime activity stream", auth=True)
     async def events_stream_route(

@@ -106,6 +106,13 @@ class MetricsOut:
 
 
 @dataclass
+class CpuCheckOut:
+    job: str
+    iterations: int
+    checksum: int
+
+
+@dataclass
 class ActivityEventOut:
     sequence: int
     kind: str
@@ -118,4 +125,3 @@ class RebuildIndexOut:
     job: str
     checksum: int
     duration_ms: int
-
