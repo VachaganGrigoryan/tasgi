@@ -25,7 +25,7 @@ class BenchmarkConfig:
     warmup: int = 10
     thread_workers: int = 12
     test_mode: str = "full"
-    client: str = "ab"
+    clients: tuple[str, ...] = ("ab", "asyncio")
     ab_path: str = "ab"
 
 
@@ -34,6 +34,10 @@ def load_benchmark_config(env_path: Path | None = None) -> BenchmarkConfig:
 
     values = _parse_env_file(env_path or DEFAULT_ENV_PATH)
     values.update({key: value for key, value in os.environ.items() if key.startswith("BENCHMARK_")})
+
+    raw_clients = values.get("BENCHMARK_CLIENTS")
+    if raw_clients is None:
+        raw_clients = values.get("BENCHMARK_CLIENT", "ab")
 
     config = BenchmarkConfig(
         host=values.get("BENCHMARK_HOST", "127.0.0.1"),
@@ -47,7 +51,7 @@ def load_benchmark_config(env_path: Path | None = None) -> BenchmarkConfig:
         warmup=int(values.get("BENCHMARK_WARMUP", "10")),
         thread_workers=int(values.get("BENCHMARK_THREAD_WORKERS", "12")),
         test_mode=values.get("BENCHMARK_TEST_MODE", "full").strip().lower() or "full",
-        client=values.get("BENCHMARK_CLIENT", "ab").strip().lower() or "ab",
+        clients=_parse_clients(raw_clients),
         ab_path=values.get("BENCHMARK_AB_PATH", "ab").strip() or "ab",
     )
     if config.test_mode == "smoke":
@@ -63,10 +67,19 @@ def load_benchmark_config(env_path: Path | None = None) -> BenchmarkConfig:
             warmup=min(config.warmup, 3),
             thread_workers=config.thread_workers,
             test_mode=config.test_mode,
-            client=config.client,
+            clients=config.clients,
             ab_path=config.ab_path,
         )
     return config
+
+
+def _parse_clients(raw_value: str) -> tuple[str, ...]:
+    clients = tuple(
+        value.strip().lower()
+        for value in raw_value.split(",")
+        if value.strip()
+    )
+    return clients or ("ab",)
 
 
 def _parse_env_file(path: Path) -> dict[str, str]:

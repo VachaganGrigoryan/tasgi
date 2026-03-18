@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import http.client
 import importlib.util
 import json
 import os
@@ -41,6 +42,7 @@ class BenchmarkScenario:
 class BenchmarkResult:
     """Summary produced by one benchmark scenario."""
 
+    client: str
     framework: str
     name: str
     path: str
@@ -123,11 +125,12 @@ async def main_async() -> int:
     ]
 
     results: list[BenchmarkResult] = []
-    for target in targets:
-        results.extend(await _run_target(target, config, scenarios))
+    for client in config.clients:
+        for target in targets:
+            results.extend(await _run_target(target, config, scenarios, client))
 
     _print_results(results)
-    _print_comparison(results, [scenario.name for scenario in scenarios])
+    _print_comparison(results, [scenario.name for scenario in scenarios], config.clients)
     return 0
 
 
@@ -142,6 +145,7 @@ async def _run_target(
     target: ServerTarget,
     config: BenchmarkConfig,
     scenarios: list[BenchmarkScenario],
+    client: str,
 ) -> list[BenchmarkResult]:
     process = await _start_server(target, config)
     try:
@@ -152,7 +156,7 @@ async def _run_target(
             await _reset_metrics(config.host, config.port)
             await _warmup(config.host, config.port, scenario, config.warmup)
             await _reset_metrics(config.host, config.port)
-            results.append(await _run_scenario(target.name, config, scenario))
+            results.append(await _run_scenario(client, target.name, config, scenario))
         return results
     finally:
         await _stop_server(process)
@@ -166,13 +170,26 @@ async def _warmup(host: str, port: int, scenario: BenchmarkScenario, count: int)
 
 
 async def _run_scenario(
+    client: str,
     framework: str,
     config: BenchmarkConfig,
     scenario: BenchmarkScenario,
 ) -> BenchmarkResult:
-    if config.client == "ab":
-        return await _run_scenario_with_ab(framework, config, scenario)
+    if client == "ab":
+        return await _run_scenario_with_ab(client, framework, config, scenario)
+    if client == "asyncio":
+        return await _run_scenario_with_asyncio(client, framework, config, scenario)
+    if client == "httpclient":
+        return await _run_scenario_with_httpclient(client, framework, config, scenario)
+    raise RuntimeError("Unsupported benchmark client %r." % client)
 
+
+async def _run_scenario_with_asyncio(
+    client: str,
+    framework: str,
+    config: BenchmarkConfig,
+    scenario: BenchmarkScenario,
+) -> BenchmarkResult:
     latencies: list[float] = []
     semaphore = asyncio.Semaphore(scenario.concurrency)
 
@@ -192,6 +209,60 @@ async def _run_scenario(
     await asyncio.gather(*[one_request() for _ in range(scenario.requests)])
     total_seconds = perf_counter() - started
 
+    return await _build_result_from_latencies(
+        client,
+        framework,
+        config,
+        scenario,
+        latencies,
+        total_seconds,
+    )
+
+
+async def _run_scenario_with_httpclient(
+    client: str,
+    framework: str,
+    config: BenchmarkConfig,
+    scenario: BenchmarkScenario,
+) -> BenchmarkResult:
+    latencies: list[float] = []
+    semaphore = asyncio.Semaphore(scenario.concurrency)
+
+    async def one_request() -> None:
+        async with semaphore:
+            started = perf_counter()
+            await asyncio.to_thread(
+                _issue_request_blocking,
+                config.host,
+                config.port,
+                scenario.method,
+                scenario.path,
+                scenario.body,
+            )
+            latencies.append((perf_counter() - started) * 1000.0)
+
+    started = perf_counter()
+    await asyncio.gather(*[one_request() for _ in range(scenario.requests)])
+    total_seconds = perf_counter() - started
+
+    return await _build_result_from_latencies(
+        client,
+        framework,
+        config,
+        scenario,
+        latencies,
+        total_seconds,
+    )
+
+
+async def _build_result_from_latencies(
+    client: str,
+    framework: str,
+    config: BenchmarkConfig,
+    scenario: BenchmarkScenario,
+    latencies: list[float],
+    total_seconds: float,
+) -> BenchmarkResult:
     metrics = await _fetch_metrics(config.host, config.port)
     worker_threads_used = len(metrics.get(scenario.metric_label, {}).get("thread_ids", []))
     if scenario.expect_multiple_threads and worker_threads_used < 2:
@@ -201,6 +272,7 @@ async def _run_scenario(
         )
 
     return BenchmarkResult(
+        client=client,
         framework=framework,
         name=scenario.name,
         path=scenario.path,
@@ -215,6 +287,7 @@ async def _run_scenario(
 
 
 async def _run_scenario_with_ab(
+    client: str,
     framework: str,
     config: BenchmarkConfig,
     scenario: BenchmarkScenario,
@@ -271,6 +344,7 @@ async def _run_scenario_with_ab(
         )
 
     return BenchmarkResult(
+        client=client,
         framework=framework,
         name=scenario.name,
         path=scenario.path,
@@ -313,6 +387,28 @@ async def _issue_request(
     return response_bytes
 
 
+def _issue_request_blocking(
+    host: str,
+    port: int,
+    method: str,
+    path: str,
+    body: bytes = b"",
+) -> bytes:
+    connection = http.client.HTTPConnection(host, port, timeout=30)
+    headers = {"Connection": "close"}
+    if body:
+        headers["Content-Type"] = "application/json"
+    try:
+        connection.request(method, path, body=body or None, headers=headers)
+        response = connection.getresponse()
+        payload = response.read()
+        if response.status >= 400:
+            raise RuntimeError("Request %s %s failed with HTTP %s." % (method, path, response.status))
+        return payload
+    finally:
+        connection.close()
+
+
 def _build_http_request(method: str, host: str, path: str, body: bytes) -> bytes:
     headers = [
         f"{method} {path} HTTP/1.1",
@@ -331,7 +427,7 @@ def _validate_benchmark_dependencies(config: BenchmarkConfig) -> None:
         if importlib.util.find_spec(module_name) is None:
             missing.append(module_name)
 
-    if config.client == "ab" and shutil.which(config.ab_path) is None:
+    if "ab" in config.clients and shutil.which(config.ab_path) is None:
         missing.append("ab")
 
     if not missing:
@@ -492,13 +588,14 @@ def _percentile(values: list[float], fraction: float) -> float:
 def _print_results(results: list[BenchmarkResult]) -> None:
     print("\nBenchmark results:")
     print(
-        "  %-10s %-8s %10s %12s %12s %12s %8s"
-        % ("App", "Scenario", "Req/s", "Avg ms", "P95 ms", "Total s", "Threads")
+        "  %-10s %-10s %-8s %10s %12s %12s %12s %8s"
+        % ("Client", "App", "Scenario", "Req/s", "Avg ms", "P95 ms", "Total s", "Threads")
     )
     for result in results:
         print(
-            "  %-10s %-8s %10.1f %12.2f %12.2f %12.3f %8d"
+            "  %-10s %-10s %-8s %10.1f %12.2f %12.2f %12.3f %8d"
             % (
+                result.client,
                 result.framework,
                 result.name,
                 result.requests_per_second,
@@ -510,29 +607,35 @@ def _print_results(results: list[BenchmarkResult]) -> None:
         )
 
 
-def _print_comparison(results: list[BenchmarkResult], scenario_names: list[str]) -> None:
-    grouped: dict[str, dict[str, BenchmarkResult]] = {}
+def _print_comparison(
+    results: list[BenchmarkResult],
+    scenario_names: list[str],
+    clients: tuple[str, ...],
+) -> None:
+    grouped: dict[tuple[str, str], dict[str, BenchmarkResult]] = {}
     for result in results:
-        grouped.setdefault(result.name, {})[result.framework] = result
+        grouped.setdefault((result.client, result.name), {})[result.framework] = result
 
     print("\nComparison:")
-    print("  %-8s %-10s %-10s %-10s" % ("Scenario", "tasgi", "fastapi", "Ratio"))
-    for scenario_name in scenario_names:
-        pair = grouped.get(scenario_name, {})
-        tasgi_result = pair.get("tasgi")
-        fastapi_result = pair.get("fastapi")
-        if tasgi_result is None or fastapi_result is None:
-            continue
-        ratio = tasgi_result.requests_per_second / fastapi_result.requests_per_second
-        print(
-            "  %-8s %-10.1f %-10.1f %-10.2fx"
-            % (
-                scenario_name,
-                tasgi_result.requests_per_second,
-                fastapi_result.requests_per_second,
-                ratio,
+    print("  %-10s %-8s %-10s %-10s %-10s" % ("Client", "Scenario", "tasgi", "fastapi", "Ratio"))
+    for client in clients:
+        for scenario_name in scenario_names:
+            pair = grouped.get((client, scenario_name), {})
+            tasgi_result = pair.get("tasgi")
+            fastapi_result = pair.get("fastapi")
+            if tasgi_result is None or fastapi_result is None:
+                continue
+            ratio = tasgi_result.requests_per_second / fastapi_result.requests_per_second
+            print(
+                "  %-10s %-8s %-10.1f %-10.1f %-10.2fx"
+                % (
+                    client,
+                    scenario_name,
+                    tasgi_result.requests_per_second,
+                    fastapi_result.requests_per_second,
+                    ratio,
+                )
             )
-        )
 
 
 if __name__ == "__main__":

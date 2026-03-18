@@ -54,15 +54,22 @@ Settings live in `.env`:
 - `BENCHMARK_WARMUP`
 - `BENCHMARK_THREAD_WORKERS`
 - `BENCHMARK_TEST_MODE`
-- `BENCHMARK_CLIENT`
+- `BENCHMARK_CLIENTS`
 - `BENCHMARK_AB_PATH`
 
-## Benchmark client
+## Benchmark clients
 
-Two request drivers are supported:
+The runner can execute the same scenarios through multiple client styles in one run.
 
-- `BENCHMARK_CLIENT=ab`
-- `BENCHMARK_CLIENT=asyncio`
+Configured via:
+
+- `BENCHMARK_CLIENTS=ab,asyncio`
+
+Supported client names:
+
+- `ab`: ApacheBench external driver
+- `asyncio`: internal raw-socket asyncio driver
+- `httpclient`: stdlib `http.client` requests dispatched from worker threads
 
 `ab` is useful when you want an external tool driving the load, especially for CPU and blocking endpoint verification.
 
