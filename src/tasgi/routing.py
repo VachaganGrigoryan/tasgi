@@ -154,10 +154,33 @@ class Router:
         methods: Optional[list[str]] = None,
         execution: Optional[ExecutionPolicy] = None,
         metadata: Optional[dict[str, Any]] = None,
+        summary: Optional[str] = None,
+        description: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+        operation_id: Optional[str] = None,
+        request_model: Any = None,
+        response_model: Any = None,
+        request_schema: Optional[dict[str, Any]] = None,
+        response_schema: Optional[dict[str, Any]] = None,
+        status_code: Optional[int] = None,
+        include_in_schema: bool = True,
     ):
         """Decorator form for registering one or more HTTP methods."""
 
         resolved_methods = list(methods or ["GET"])
+        route_metadata = _build_route_metadata(
+            metadata=metadata,
+            summary=summary,
+            description=description,
+            tags=tags,
+            operation_id=operation_id,
+            request_model=request_model,
+            response_model=response_model,
+            request_schema=request_schema,
+            response_schema=response_schema,
+            status_code=status_code,
+            include_in_schema=include_in_schema,
+        )
 
         def decorator(handler: Handler):
             self.add_route(
@@ -165,7 +188,7 @@ class Router:
                 resolved_methods,
                 handler,
                 execution=execution,
-                metadata=metadata,
+                metadata=route_metadata,
             )
             return handler
 
@@ -177,10 +200,35 @@ class Router:
         *,
         execution: Optional[ExecutionPolicy] = None,
         metadata: Optional[dict[str, Any]] = None,
+        summary: Optional[str] = None,
+        description: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+        operation_id: Optional[str] = None,
+        request_model: Any = None,
+        response_model: Any = None,
+        request_schema: Optional[dict[str, Any]] = None,
+        response_schema: Optional[dict[str, Any]] = None,
+        status_code: Optional[int] = None,
+        include_in_schema: bool = True,
     ):
         """Register a GET handler on this router."""
 
-        return self.route(path, methods=["GET"], execution=execution, metadata=metadata)
+        return self.route(
+            path,
+            methods=["GET"],
+            execution=execution,
+            metadata=metadata,
+            summary=summary,
+            description=description,
+            tags=tags,
+            operation_id=operation_id,
+            request_model=request_model,
+            response_model=response_model,
+            request_schema=request_schema,
+            response_schema=response_schema,
+            status_code=status_code,
+            include_in_schema=include_in_schema,
+        )
 
     def post(
         self,
@@ -188,10 +236,35 @@ class Router:
         *,
         execution: Optional[ExecutionPolicy] = None,
         metadata: Optional[dict[str, Any]] = None,
+        summary: Optional[str] = None,
+        description: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+        operation_id: Optional[str] = None,
+        request_model: Any = None,
+        response_model: Any = None,
+        request_schema: Optional[dict[str, Any]] = None,
+        response_schema: Optional[dict[str, Any]] = None,
+        status_code: Optional[int] = None,
+        include_in_schema: bool = True,
     ):
         """Register a POST handler on this router."""
 
-        return self.route(path, methods=["POST"], execution=execution, metadata=metadata)
+        return self.route(
+            path,
+            methods=["POST"],
+            execution=execution,
+            metadata=metadata,
+            summary=summary,
+            description=description,
+            tags=tags,
+            operation_id=operation_id,
+            request_model=request_model,
+            response_model=response_model,
+            request_schema=request_schema,
+            response_schema=response_schema,
+            status_code=status_code,
+            include_in_schema=include_in_schema,
+        )
 
     def put(
         self,
@@ -199,10 +272,35 @@ class Router:
         *,
         execution: Optional[ExecutionPolicy] = None,
         metadata: Optional[dict[str, Any]] = None,
+        summary: Optional[str] = None,
+        description: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+        operation_id: Optional[str] = None,
+        request_model: Any = None,
+        response_model: Any = None,
+        request_schema: Optional[dict[str, Any]] = None,
+        response_schema: Optional[dict[str, Any]] = None,
+        status_code: Optional[int] = None,
+        include_in_schema: bool = True,
     ):
         """Register a PUT handler on this router."""
 
-        return self.route(path, methods=["PUT"], execution=execution, metadata=metadata)
+        return self.route(
+            path,
+            methods=["PUT"],
+            execution=execution,
+            metadata=metadata,
+            summary=summary,
+            description=description,
+            tags=tags,
+            operation_id=operation_id,
+            request_model=request_model,
+            response_model=response_model,
+            request_schema=request_schema,
+            response_schema=response_schema,
+            status_code=status_code,
+            include_in_schema=include_in_schema,
+        )
 
     def delete(
         self,
@@ -210,10 +308,35 @@ class Router:
         *,
         execution: Optional[ExecutionPolicy] = None,
         metadata: Optional[dict[str, Any]] = None,
+        summary: Optional[str] = None,
+        description: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+        operation_id: Optional[str] = None,
+        request_model: Any = None,
+        response_model: Any = None,
+        request_schema: Optional[dict[str, Any]] = None,
+        response_schema: Optional[dict[str, Any]] = None,
+        status_code: Optional[int] = None,
+        include_in_schema: bool = True,
     ):
         """Register a DELETE handler on this router."""
 
-        return self.route(path, methods=["DELETE"], execution=execution, metadata=metadata)
+        return self.route(
+            path,
+            methods=["DELETE"],
+            execution=execution,
+            metadata=metadata,
+            summary=summary,
+            description=description,
+            tags=tags,
+            operation_id=operation_id,
+            request_model=request_model,
+            response_model=response_model,
+            request_schema=request_schema,
+            response_schema=response_schema,
+            status_code=status_code,
+            include_in_schema=include_in_schema,
+        )
 
     def resolve(self, method: str, path: str) -> RouteMatch:
         """Resolve a request method/path pair into a route or 404/405 result."""
@@ -408,3 +531,41 @@ def _same_route_shape(
         if not left_is_param and left != right:
             return False
     return True
+
+
+def _build_route_metadata(
+    *,
+    metadata: Optional[dict[str, Any]],
+    summary: Optional[str],
+    description: Optional[str],
+    tags: Optional[list[str]],
+    operation_id: Optional[str],
+    request_model: Any,
+    response_model: Any,
+    request_schema: Optional[dict[str, Any]],
+    response_schema: Optional[dict[str, Any]],
+    status_code: Optional[int],
+    include_in_schema: bool,
+) -> dict[str, Any]:
+    route_metadata = dict(metadata or {})
+    if summary is not None:
+        route_metadata["summary"] = summary
+    if description is not None:
+        route_metadata["description"] = description
+    if tags is not None:
+        route_metadata["tags"] = list(tags)
+    if operation_id is not None:
+        route_metadata["operation_id"] = operation_id
+    if request_model is not None:
+        route_metadata["request_model"] = request_model
+    if response_model is not None:
+        route_metadata["response_model"] = response_model
+    if request_schema is not None:
+        route_metadata["request_schema"] = dict(request_schema)
+    if response_schema is not None:
+        route_metadata["response_schema"] = dict(response_schema)
+    if status_code is not None:
+        route_metadata["status_code"] = int(status_code)
+    if include_in_schema is False:
+        route_metadata["include_in_schema"] = False
+    return route_metadata

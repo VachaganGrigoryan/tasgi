@@ -6,6 +6,8 @@ import inspect
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
+from .schema import decode_request_model, get_callable_type_hints
+
 if TYPE_CHECKING:
     from .app import TasgiApp
     from .request import Request
@@ -58,7 +60,7 @@ class DependencyResolver:
         func: Callable[..., Any],
         request: "Request",
         *,
-        request_cache: dict[Callable[..., Any], Any],
+        request_cache: dict[Any, Any],
         current_scope: str,
     ) -> dict[str, Any]:
         try:
@@ -66,12 +68,14 @@ class DependencyResolver:
         except (TypeError, ValueError) as exc:
             raise TypeError("Unable to inspect dependency callable %r." % func) from exc
 
+        resolved_hints = get_callable_type_hints(func)
         kwargs: dict[str, Any] = {}
         for parameter in signature.parameters.values():
             if parameter.kind in {inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD}:
                 raise TypeError("tasgi dependencies do not support *args or **kwargs parameters.")
             kwargs[parameter.name] = await self._resolve_parameter(
                 parameter,
+                resolved_hints.get(parameter.name, parameter.annotation),
                 request,
                 request_cache=request_cache,
                 current_scope=current_scope,
@@ -81,17 +85,23 @@ class DependencyResolver:
     async def _resolve_parameter(
         self,
         parameter: inspect.Parameter,
+        resolved_annotation: Any,
         request: "Request",
         *,
-        request_cache: dict[Callable[..., Any], Any],
+        request_cache: dict[Any, Any],
         current_scope: str,
     ) -> Any:
-        if _is_request_parameter(parameter):
+        if _is_request_parameter(parameter, resolved_annotation):
             if current_scope == APP_SCOPE:
                 raise TypeError("App-scoped dependencies cannot depend on the request object.")
             return request
-        if _is_app_parameter(parameter):
+        if _is_app_parameter(parameter, resolved_annotation):
             return request.app
+
+        if resolved_annotation is not inspect.Signature.empty and parameter.default is inspect.Signature.empty:
+            if current_scope == APP_SCOPE:
+                raise TypeError("App-scoped dependencies cannot depend on request body models.")
+            return _resolve_body_parameter(request, resolved_annotation, request_cache)
 
         default = parameter.default
         if isinstance(default, Depends):
@@ -115,7 +125,7 @@ class DependencyResolver:
         dependency: Depends,
         request: "Request",
         *,
-        request_cache: dict[Callable[..., Any], Any],
+        request_cache: dict[Any, Any],
         current_scope: str,
     ) -> Any:
         if current_scope == APP_SCOPE and dependency.scope != APP_SCOPE:
@@ -138,7 +148,7 @@ class DependencyResolver:
         dependency: Depends,
         request: "Request",
         *,
-        request_cache: dict[Callable[..., Any], Any],
+        request_cache: dict[Any, Any],
     ) -> Any:
         if dependency.use_cache and dependency.provider in request_cache:
             return request_cache[dependency.provider]
@@ -158,7 +168,7 @@ class DependencyResolver:
         dependency: Depends,
         request: "Request",
         *,
-        request_cache: dict[Callable[..., Any], Any],
+        request_cache: dict[Any, Any],
     ) -> Any:
         if dependency.use_cache and dependency.provider in self._app_cache:
             return self._app_cache[dependency.provider]
@@ -189,7 +199,7 @@ class DependencyResolver:
         func: Callable[..., Any],
         request: "Request",
         *,
-        request_cache: dict[Callable[..., Any], Any],
+        request_cache: dict[Any, Any],
         current_scope: str,
     ) -> Any:
         kwargs = await self._resolve_callable(
@@ -210,11 +220,16 @@ def _is_async_callable(func: Callable[..., Any]) -> bool:
     return inspect.iscoroutinefunction(call)
 
 
-def _is_request_parameter(parameter: inspect.Parameter) -> bool:
-    annotation = parameter.annotation
+def _is_request_parameter(parameter: inspect.Parameter, annotation: Any) -> bool:
     return parameter.name == "request" or getattr(annotation, "__name__", None) == "Request"
 
 
-def _is_app_parameter(parameter: inspect.Parameter) -> bool:
-    annotation = parameter.annotation
+def _is_app_parameter(parameter: inspect.Parameter, annotation: Any) -> bool:
     return parameter.name == "app" or getattr(annotation, "__name__", None) == "TasgiApp"
+
+
+def _resolve_body_parameter(request: "Request", annotation: Any, request_cache: dict[Any, Any]) -> Any:
+    cache_key = ("body", annotation)
+    if cache_key not in request_cache:
+        request_cache[cache_key] = decode_request_model(request, annotation)
+    return request_cache[cache_key]

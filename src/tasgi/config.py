@@ -14,7 +14,13 @@ class TasgiConfig:
 
     host: str = "127.0.0.1"
     port: int = 8000
+    title: str = "tasgi"
+    version: str = "0.1.0"
+    description: Optional[str] = None
     debug: bool = False
+    docs: bool = False
+    openapi_url: Optional[str] = None
+    docs_url: Optional[str] = None
     default_execution: ExecutionPolicy = ASYNC_EXECUTION
     thread_pool_workers: Optional[int] = None
     cpu_thread_pool_workers: Optional[int] = None
@@ -38,6 +44,8 @@ class TasgiConfig:
             raise ValueError("graceful_shutdown_timeout must be positive.")
         if (self.tls_certfile is None) != (self.tls_keyfile is None):
             raise ValueError("tls_certfile and tls_keyfile must be provided together.")
+        _validate_optional_route_path("openapi_url", self.openapi_url)
+        _validate_optional_route_path("docs_url", self.docs_url)
 
 
 def _validate_positive_optional(name: str, value) -> None:
@@ -45,3 +53,10 @@ def _validate_positive_optional(name: str, value) -> None:
         return
     if value <= 0:
         raise ValueError("%s must be positive." % name)
+
+
+def _validate_optional_route_path(name: str, value: Optional[str]) -> None:
+    if value is None:
+        return
+    if not value.startswith("/"):
+        raise ValueError("%s must start with '/'." % name)

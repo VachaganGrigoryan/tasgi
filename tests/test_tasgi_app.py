@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import sys
 import threading
 import unittest
@@ -55,6 +56,11 @@ class TasgiConfigTests(unittest.TestCase):
         self.assertEqual(config.default_execution, ASYNC_EXECUTION)
         self.assertEqual(config.max_request_body_size, 1_048_576)
         self.assertTrue(config.http2)
+        self.assertEqual(config.title, "tasgi")
+        self.assertEqual(config.version, "0.1.0")
+        self.assertFalse(config.docs)
+        self.assertIsNone(config.openapi_url)
+        self.assertIsNone(config.docs_url)
         self.assertIsNone(config.tls_certfile)
         self.assertIsNone(config.tls_keyfile)
 
@@ -285,17 +291,15 @@ class TasgiDocsTests(unittest.IsolatedAsyncioTestCase):
 
         @app.get(
             "/users/{id}",
-            metadata={
-                "summary": "Get user",
-                "description": "Return one user",
-                "tags": ["users"],
-                "operation_id": "getUser",
-            },
+            summary="Get user",
+            description="Return one user",
+            tags=["users"],
+            operation_id="getUser",
         )
         async def get_user(request) -> JsonResponse:
             return JsonResponse({"id": request.route_params["id"]})
 
-        @app.post("/users", metadata={"summary": "Create user"})
+        @app.post("/users", summary="Create user")
         def create_user(request) -> JsonResponse:
             return JsonResponse({"created": True}, status_code=201)
 
@@ -364,6 +368,82 @@ class TasgiDocsTests(unittest.IsolatedAsyncioTestCase):
 
         document = app.openapi_schema()
         self.assertEqual(document["paths"]["/"]["get"]["responses"], {"200": {"description": "Successful Response"}})
+
+    async def test_builtin_openapi_and_docs_routes_work_from_config(self) -> None:
+        app = TasgiApp(docs=True, title="Demo Docs", version="2.0.0")
+
+        @app.get("/", summary="Home", response_model=str)
+        async def home(request) -> str:
+            return "home"
+
+        try:
+            openapi_response, docs_response = await asyncio.gather(
+                ASGIServer(app).handle_raw_request(build_get_request("/openapi.json")),
+                ASGIServer(app).handle_raw_request(build_get_request("/docs")),
+            )
+        finally:
+            await app.close()
+
+        self.assertIn(b'"title": "Demo Docs"', openapi_response)
+        self.assertIn(b'"/": {"get":', openapi_response)
+        self.assertIn(b"swagger-ui", docs_response)
+        self.assertIn(b"/openapi.json", docs_response)
+
+    def test_openapi_infers_request_and_response_models(self) -> None:
+        @dataclass
+        class EchoIn:
+            message: str
+
+        @dataclass
+        class EchoOut:
+            echoed: str
+
+        app = TasgiApp()
+
+        @app.post(
+            "/echo",
+            summary="Echo message",
+            tags=["demo"],
+            request_model=EchoIn,
+            response_model=EchoOut,
+            status_code=201,
+        )
+        def echo(request, body: EchoIn) -> EchoOut:
+            return EchoOut(echoed=body.message)
+
+        document = app.openapi_schema()
+        operation = document["paths"]["/echo"]["post"]
+        self.assertEqual(operation["summary"], "Echo message")
+        self.assertEqual(operation["tags"], ["demo"])
+        self.assertEqual(operation["requestBody"]["content"]["application/json"]["schema"]["required"], ["message"])
+        self.assertEqual(
+            operation["responses"]["201"]["content"]["application/json"]["schema"]["properties"]["echoed"]["type"],
+            "string",
+        )
+
+    async def test_typed_body_parameter_and_model_return_are_coerced_automatically(self) -> None:
+        @dataclass
+        class EchoIn:
+            message: str
+
+        @dataclass
+        class EchoOut:
+            echoed: str
+
+        app = TasgiApp()
+
+        @app.post("/echo", request_model=EchoIn, response_model=EchoOut, status_code=201)
+        def echo(request, body: EchoIn) -> EchoOut:
+            self.assertIsInstance(body, EchoIn)
+            return EchoOut(echoed=body.message)
+
+        try:
+            response = await ASGIServer(app).handle_raw_request(build_post_request("/echo", b'{"message":"hi"}'))
+        finally:
+            await app.close()
+
+        self.assertIn(b"HTTP/1.1 201 Created", response)
+        self.assertIn(b'{"echoed": "hi"}', response)
 
     async def test_exact_route_wins_before_param_route(self) -> None:
         app = TasgiApp()

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 import inspect
-from typing import Optional
+from typing import Any, Optional
 
 from .asgi import build_request, receive_request_body, send_response, validate_http_scope
 from .config import TasgiConfig
@@ -14,9 +14,10 @@ from .docs import OpenAPIDocs
 from .exceptions import HTTPError, MethodNotAllowed
 from .lifecycle import LifecycleManager
 from .middleware import Middleware, NextHandler, is_async_middleware
-from .response import Response, StreamingResponse, TextResponse
+from .response import JsonResponse, Response, StreamingResponse, TextResponse
 from .routing import Handler, Route, Router
 from .runtime import ASYNC_EXECUTION, THREAD_EXECUTION, ExecutionPolicy, TasgiRuntime, validate_execution_policy
+from .schema import get_callable_type_hints, serialize_model_value
 from .state import AppState
 from .websocket import WebSocket
 
@@ -52,6 +53,8 @@ class TasgiApp:
         self._lifecycle_state = "created"
         self._started = False
         self._closed = False
+        self._configure_docs_from_config()
+        self._register_builtin_docs_routes()
 
     @property
     def runtime(self) -> TasgiRuntime:
@@ -86,12 +89,35 @@ class TasgiApp:
         methods: Optional[list[str]] = None,
         execution: Optional[ExecutionPolicy] = None,
         metadata: Optional[dict[str, object]] = None,
+        summary: Optional[str] = None,
+        description: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+        operation_id: Optional[str] = None,
+        request_model: Any = None,
+        response_model: Any = None,
+        request_schema: Optional[dict[str, object]] = None,
+        response_schema: Optional[dict[str, object]] = None,
+        status_code: Optional[int] = None,
+        include_in_schema: bool = True,
     ):
         """Register a handler for one or more HTTP methods."""
 
         if execution is not None:
             validate_execution_policy(execution)
         resolved_methods = list(methods or ["GET"])
+        route_metadata = _build_route_metadata(
+            metadata=metadata,
+            summary=summary,
+            description=description,
+            tags=tags,
+            operation_id=operation_id,
+            request_model=request_model,
+            response_model=response_model,
+            request_schema=request_schema,
+            response_schema=response_schema,
+            status_code=status_code,
+            include_in_schema=include_in_schema,
+        )
 
         def decorator(handler: Handler):
             is_async = inspect.iscoroutinefunction(handler)
@@ -101,7 +127,7 @@ class TasgiApp:
                 resolved_methods,
                 handler,
                 execution=execution,
-                metadata=metadata,
+                metadata=route_metadata,
             )
             return handler
 
@@ -113,10 +139,35 @@ class TasgiApp:
         *,
         execution: Optional[ExecutionPolicy] = None,
         metadata: Optional[dict[str, object]] = None,
+        summary: Optional[str] = None,
+        description: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+        operation_id: Optional[str] = None,
+        request_model: Any = None,
+        response_model: Any = None,
+        request_schema: Optional[dict[str, object]] = None,
+        response_schema: Optional[dict[str, object]] = None,
+        status_code: Optional[int] = None,
+        include_in_schema: bool = True,
     ):
         """Register a GET handler."""
 
-        return self.route(path, methods=["GET"], execution=execution, metadata=metadata)
+        return self.route(
+            path,
+            methods=["GET"],
+            execution=execution,
+            metadata=metadata,
+            summary=summary,
+            description=description,
+            tags=tags,
+            operation_id=operation_id,
+            request_model=request_model,
+            response_model=response_model,
+            request_schema=request_schema,
+            response_schema=response_schema,
+            status_code=status_code,
+            include_in_schema=include_in_schema,
+        )
 
     def post(
         self,
@@ -124,10 +175,103 @@ class TasgiApp:
         *,
         execution: Optional[ExecutionPolicy] = None,
         metadata: Optional[dict[str, object]] = None,
+        summary: Optional[str] = None,
+        description: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+        operation_id: Optional[str] = None,
+        request_model: Any = None,
+        response_model: Any = None,
+        request_schema: Optional[dict[str, object]] = None,
+        response_schema: Optional[dict[str, object]] = None,
+        status_code: Optional[int] = None,
+        include_in_schema: bool = True,
     ):
         """Register a POST handler."""
 
-        return self.route(path, methods=["POST"], execution=execution, metadata=metadata)
+        return self.route(
+            path,
+            methods=["POST"],
+            execution=execution,
+            metadata=metadata,
+            summary=summary,
+            description=description,
+            tags=tags,
+            operation_id=operation_id,
+            request_model=request_model,
+            response_model=response_model,
+            request_schema=request_schema,
+            response_schema=response_schema,
+            status_code=status_code,
+            include_in_schema=include_in_schema,
+        )
+
+    def put(
+        self,
+        path: str,
+        *,
+        execution: Optional[ExecutionPolicy] = None,
+        metadata: Optional[dict[str, object]] = None,
+        summary: Optional[str] = None,
+        description: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+        operation_id: Optional[str] = None,
+        request_model: Any = None,
+        response_model: Any = None,
+        request_schema: Optional[dict[str, object]] = None,
+        response_schema: Optional[dict[str, object]] = None,
+        status_code: Optional[int] = None,
+        include_in_schema: bool = True,
+    ):
+        return self.route(
+            path,
+            methods=["PUT"],
+            execution=execution,
+            metadata=metadata,
+            summary=summary,
+            description=description,
+            tags=tags,
+            operation_id=operation_id,
+            request_model=request_model,
+            response_model=response_model,
+            request_schema=request_schema,
+            response_schema=response_schema,
+            status_code=status_code,
+            include_in_schema=include_in_schema,
+        )
+
+    def delete(
+        self,
+        path: str,
+        *,
+        execution: Optional[ExecutionPolicy] = None,
+        metadata: Optional[dict[str, object]] = None,
+        summary: Optional[str] = None,
+        description: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+        operation_id: Optional[str] = None,
+        request_model: Any = None,
+        response_model: Any = None,
+        request_schema: Optional[dict[str, object]] = None,
+        response_schema: Optional[dict[str, object]] = None,
+        status_code: Optional[int] = None,
+        include_in_schema: bool = True,
+    ):
+        return self.route(
+            path,
+            methods=["DELETE"],
+            execution=execution,
+            metadata=metadata,
+            summary=summary,
+            description=description,
+            tags=tags,
+            operation_id=operation_id,
+            request_model=request_model,
+            response_model=response_model,
+            request_schema=request_schema,
+            response_schema=response_schema,
+            status_code=status_code,
+            include_in_schema=include_in_schema,
+        )
 
     def websocket(
         self,
@@ -413,9 +557,7 @@ class TasgiApp:
             if isinstance(result, StreamingResponse):
                 result.bind_thread_runtime(self._runtime)
 
-        if not isinstance(result, Response):
-            raise TypeError("tasgi handlers must return Response objects.")
-        return result
+        return self._coerce_handler_result(route, result)
 
     def _build_middleware_chain(self, route: Route) -> NextHandler:
         async def endpoint(current_request) -> Response:
@@ -485,6 +627,68 @@ class TasgiApp:
             self._shutdown_lock = asyncio.Lock()
         return self._shutdown_lock
 
+    def _configure_docs_from_config(self) -> None:
+        self.configure_docs(
+            title=self.config.title,
+            version=self.config.version,
+            description=self.config.description,
+        )
+
+    def _register_builtin_docs_routes(self) -> None:
+        openapi_url = self.config.openapi_url or ("/openapi.json" if self.config.docs else None)
+        docs_url = self.config.docs_url or ("/docs" if self.config.docs else None)
+        if docs_url and not openapi_url:
+            openapi_url = "/openapi.json"
+        if openapi_url is not None:
+            self._register_openapi_route(openapi_url)
+        if docs_url is not None and openapi_url is not None:
+            self._register_docs_route(docs_url, openapi_url)
+
+    def _register_openapi_route(self, path: str) -> None:
+        @self.get(
+            path,
+            include_in_schema=False,
+            summary="OpenAPI document",
+            response_schema={"type": "object"},
+        )
+        async def openapi_route(request) -> JsonResponse:
+            return JsonResponse(self.openapi_schema())
+
+        del openapi_route
+
+    def _register_docs_route(self, path: str, openapi_url: str) -> None:
+        @self.get(
+            path,
+            include_in_schema=False,
+            summary="Swagger UI",
+            response_schema={"type": "string"},
+            response_model=str,
+        )
+        async def docs_route(request) -> Response:
+            return Response(
+                self.docs.swagger_ui_html(openapi_url=openapi_url, title="%s docs" % self.docs.title),
+                media_type="text/html; charset=utf-8",
+            )
+
+        del docs_route
+
+    def _coerce_handler_result(self, route: Route, result: Any) -> Response:
+        if isinstance(result, Response):
+            return result
+
+        status_code = int(route.metadata.get("status_code", 200))
+        response_model = route.metadata.get("response_model") or _infer_handler_response_model(route.handler)
+        if response_model is None:
+            raise TypeError("tasgi handlers must return Response objects.")
+
+        if result is None:
+            return Response(b"", status_code=status_code)
+        if isinstance(result, bytes):
+            return Response(result, status_code=status_code, media_type="application/octet-stream")
+        if isinstance(result, str):
+            return TextResponse(result, status_code=status_code)
+        return JsonResponse(serialize_model_value(result), status_code=status_code)
+
 
 def _normalize_router_prefix(prefix: str) -> str:
     if not prefix:
@@ -502,6 +706,53 @@ def _join_router_prefix(prefix: str, path: str) -> str:
     if path == "/":
         return prefix
     return prefix + path
+
+
+def _build_route_metadata(
+    *,
+    metadata: Optional[dict[str, object]],
+    summary: Optional[str],
+    description: Optional[str],
+    tags: Optional[list[str]],
+    operation_id: Optional[str],
+    request_model: Any,
+    response_model: Any,
+    request_schema: Optional[dict[str, object]],
+    response_schema: Optional[dict[str, object]],
+    status_code: Optional[int],
+    include_in_schema: bool,
+) -> dict[str, object]:
+    route_metadata = dict(metadata or {})
+    if summary is not None:
+        route_metadata["summary"] = summary
+    if description is not None:
+        route_metadata["description"] = description
+    if tags is not None:
+        route_metadata["tags"] = list(tags)
+    if operation_id is not None:
+        route_metadata["operation_id"] = operation_id
+    if request_model is not None:
+        route_metadata["request_model"] = request_model
+    if response_model is not None:
+        route_metadata["response_model"] = response_model
+    if request_schema is not None:
+        route_metadata["request_schema"] = dict(request_schema)
+    if response_schema is not None:
+        route_metadata["response_schema"] = dict(response_schema)
+    if status_code is not None:
+        route_metadata["status_code"] = int(status_code)
+    if include_in_schema is False:
+        route_metadata["include_in_schema"] = False
+    return route_metadata
+
+
+def _infer_handler_response_model(handler: Handler) -> Any:
+    annotation = get_callable_type_hints(handler).get("return", inspect.signature(handler).return_annotation)
+    if annotation is inspect.Signature.empty:
+        return None
+    if inspect.isclass(annotation) and issubclass(annotation, Response):
+        return None
+    return annotation
 
 
 App = TasgiApp
