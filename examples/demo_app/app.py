@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 import time
 
 from tasgi import (
@@ -40,7 +39,7 @@ async def require_http2(request, call_next):
         )
     return await call_next(request)
 
-# print(f"tasgi demo app is importing {sys._is_gil_enabled()=}")
+
 def build_demo_app() -> TasgiApp:
     """Create the example tasgi application."""
 
@@ -49,7 +48,8 @@ def build_demo_app() -> TasgiApp:
         port=8000,
         debug=True,
         default_execution=THREAD_EXECUTION,
-        thread_pool_workers=12,
+        thread_pool_workers=8,
+        http2=True,
     )
     app.add_middleware(TimingMiddleware())
     # app.add_middleware(require_http2)
@@ -89,11 +89,7 @@ def build_demo_app() -> TasgiApp:
 
     @app.get("/cpu")
     def cpu_route(request) -> TextResponse:
-        print("Starting CPU demo work...")
-        result = cpu_demo_work()
-        print("CPU demo work completed.")
-        return TextResponse("CPU result: %s" % result)
-        # return TextResponse("CPU result: %s" % cpu_demo_work())
+        return TextResponse("CPU result: %s" % cpu_demo_work())
 
     @app.get("/error")
     def error_route(request):

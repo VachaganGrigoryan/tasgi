@@ -21,6 +21,9 @@ class TasgiConfig:
     max_request_body_size: int = 1_048_576
     request_timeout: Optional[float] = None
     graceful_shutdown_timeout: float = 5.0
+    http2: bool = True
+    tls_certfile: Optional[str] = None
+    tls_keyfile: Optional[str] = None
 
     def __post_init__(self) -> None:
         """Validate config values eagerly so API errors fail fast."""
@@ -33,6 +36,8 @@ class TasgiConfig:
         _validate_positive_optional("request_timeout", self.request_timeout)
         if self.graceful_shutdown_timeout <= 0:
             raise ValueError("graceful_shutdown_timeout must be positive.")
+        if (self.tls_certfile is None) != (self.tls_keyfile is None):
+            raise ValueError("tls_certfile and tls_keyfile must be provided together.")
 
 
 def _validate_positive_optional(name: str, value) -> None:

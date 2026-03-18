@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import threading
 from dataclasses import dataclass, field
 from http import HTTPStatus
@@ -10,20 +11,14 @@ from typing import Awaitable, Callable, Optional, Protocol, Tuple
 
 from .http2 import (
     CLIENT_CONNECTION_PREFACE,
+    HTTP2Connection,
     FLAG_ACK,
-    FLAG_END_HEADERS,
-    FLAG_END_STREAM,
-    FRAME_DATA,
-    FRAME_HEADERS,
     FRAME_SETTINGS,
-    FRAME_WINDOW_UPDATE,
     HTTP2ProtocolError,
-    decode_header_block,
     encode_data_frame,
     encode_headers_frame,
     encode_settings_frame,
     read_frame,
-    request_data_from_headers,
 )
 from .http_parser import HTTPParseError, parse_http_request, parse_request_head
 from .types import ASGIApp, ASGIMessage, ASGIScope, Header, Receive, RequestData, Send
@@ -90,12 +85,6 @@ class _AsyncioStreamTransport:
 
     async def drain(self) -> None:
         await self.writer.drain()
-
-
-@dataclass
-class _HTTP2StreamState:
-    headers: list[Header]
-    body: bytearray = field(default_factory=bytearray)
 
 
 @dataclass
@@ -184,10 +173,16 @@ class ASGIServer:
         transport = _AsyncioStreamTransport(writer)
         client = writer.get_extra_info("peername")
         server_info = writer.get_extra_info("sockname")
+        config = getattr(self.app, "config", None)
+        http2_enabled = True if config is None else bool(getattr(config, "http2", True))
         is_http2 = False
         is_websocket = False
         try:
-            is_http2, initial_bytes = await self._read_connection_prefix(reader)
+            if http2_enabled:
+                is_http2, initial_bytes = await self._read_connection_prefix(reader)
+            else:
+                is_http2 = False
+                initial_bytes = b""
             if is_http2:
                 await self.handle_http2_connection(
                     reader,
@@ -223,8 +218,8 @@ class ASGIServer:
             if not is_http2 and not is_websocket:
                 transport.write(_build_error_response(400, str(exc)))
                 await transport.drain()
-        except HTTP2ProtocolError:
-            pass
+        except HTTP2ProtocolError as exc:
+            self._debug_http2_protocol_error(exc, client=client)
         except WebSocketProtocolError:
             pass
         except Exception:
@@ -458,13 +453,14 @@ class ASGIServer:
         active_transport = transport or BufferingTransport()
         if not preface_already_read:
             preface = await reader.readexactly(len(CLIENT_CONNECTION_PREFACE))
-            if preface != CLIENT_CONNECTION_PREFACE:
-                raise HTTP2ProtocolError("Missing HTTP/2 client connection preface.")
+        else:
+            preface = CLIENT_CONNECTION_PREFACE
 
+        connection = HTTP2Connection()
+        connection.validate_client_preface(preface)
         connection_writer = _HTTP2ConnectionWriter(active_transport)
         await connection_writer.send_settings()
 
-        stream_states: dict[int, _HTTP2StreamState] = {}
         stream_tasks: set[asyncio.Task[None]] = set()
 
         try:
@@ -476,66 +472,23 @@ class ASGIServer:
                         raise HTTP2ProtocolError("Incomplete HTTP/2 frame received.")
                     break
 
-                if frame.frame_type == FRAME_SETTINGS:
-                    if frame.stream_id != 0:
-                        raise HTTP2ProtocolError("HTTP/2 SETTINGS frames must use stream 0.")
-                    if frame.flags & FLAG_ACK:
-                        continue
+                if frame.frame_type == FRAME_SETTINGS and not (frame.flags & FLAG_ACK):
                     await connection_writer.send_settings_ack()
-                    continue
-
-                if frame.frame_type == FRAME_WINDOW_UPDATE:
-                    continue
-
-                if frame.stream_id == 0:
-                    raise HTTP2ProtocolError("HTTP/2 request frames must use a non-zero stream id.")
-
-                if frame.frame_type == FRAME_HEADERS:
-                    if not (frame.flags & FLAG_END_HEADERS):
-                        raise HTTP2ProtocolError("CONTINUATION frames are not supported in prototype.")
-                    if frame.stream_id in stream_states:
-                        raise HTTP2ProtocolError("Repeated HEADERS frames are not supported in prototype.")
-                    headers = decode_header_block(frame.payload)
-                    stream_state = _HTTP2StreamState(headers=headers)
-                    if frame.flags & FLAG_END_STREAM:
-                        self._start_http2_stream(
-                            stream_tasks,
-                            frame.stream_id,
-                            stream_state,
-                            connection_writer,
-                            client=client,
-                            server=server,
-                        )
-                    else:
-                        stream_states[frame.stream_id] = stream_state
-                    continue
-
-                if frame.frame_type == FRAME_DATA:
-                    stream_state = stream_states.get(frame.stream_id)
-                    if stream_state is None:
-                        raise HTTP2ProtocolError("Received DATA for an unknown HTTP/2 stream.")
-                    stream_state.body.extend(frame.payload)
-                    if frame.flags & FLAG_END_STREAM:
-                        self._start_http2_stream(
-                            stream_tasks,
-                            frame.stream_id,
-                            stream_state,
-                            connection_writer,
-                            client=client,
-                            server=server,
-                        )
-                        del stream_states[frame.stream_id]
-                    continue
-
-                raise HTTP2ProtocolError(
-                    "Unsupported HTTP/2 frame type %d in prototype." % frame.frame_type
-                )
+                completed_stream = connection.handle_frame(frame)
+                if completed_stream is not None:
+                    self._start_http2_stream(
+                        stream_tasks,
+                        completed_stream,
+                        connection_writer,
+                        client=client,
+                        server=server,
+                    )
         finally:
-            if stream_states:
+            if connection.streams:
                 for task in stream_tasks:
                     task.cancel()
 
-        if stream_states:
+        if connection.streams:
             raise HTTP2ProtocolError("HTTP/2 connection closed with incomplete request streams.")
 
         if stream_tasks:
@@ -552,17 +505,16 @@ class ASGIServer:
     def _start_http2_stream(
         self,
         stream_tasks: set[asyncio.Task[None]],
-        stream_id: int,
-        stream_state: _HTTP2StreamState,
+        stream_state,
         connection_writer: _HTTP2ConnectionWriter,
         *,
         client: Optional[Tuple[str, int]],
         server: Optional[Tuple[str, int]],
     ) -> None:
-        request = request_data_from_headers(stream_state.headers, bytes(stream_state.body))
+        request = stream_state.to_request_data()
         task = asyncio.create_task(
             self._handle_http2_stream(
-                stream_id,
+                stream_state.stream_id,
                 request,
                 connection_writer,
                 client=client,
@@ -571,6 +523,23 @@ class ASGIServer:
         )
         stream_tasks.add(task)
         task.add_done_callback(stream_tasks.discard)
+
+    def _debug_http2_protocol_error(
+        self,
+        exc: HTTP2ProtocolError,
+        *,
+        client: Optional[Tuple[str, int]] = None,
+    ) -> None:
+        """Print HTTP/2 protocol failures in debug mode for local diagnosis."""
+
+        config = getattr(self.app, "config", None)
+        if config is None or not getattr(config, "debug", False):
+            return
+
+        location = ""
+        if client is not None:
+            location = " from %s:%s" % client
+        print("HTTP/2 protocol error%s: %s" % (location, exc), file=sys.stderr, flush=True)
 
     async def _handle_http2_stream(
         self,

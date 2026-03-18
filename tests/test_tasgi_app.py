@@ -51,6 +51,9 @@ class TasgiConfigTests(unittest.TestCase):
         self.assertFalse(config.debug)
         self.assertEqual(config.default_execution, ASYNC_EXECUTION)
         self.assertEqual(config.max_request_body_size, 1_048_576)
+        self.assertTrue(config.http2)
+        self.assertIsNone(config.tls_certfile)
+        self.assertIsNone(config.tls_keyfile)
 
     def test_app_creation_exposes_config_and_state(self) -> None:
         config = TasgiConfig(default_execution=THREAD_EXECUTION, thread_pool_workers=8)
@@ -64,6 +67,10 @@ class TasgiConfigTests(unittest.TestCase):
         self.assertTrue(app.config.debug)
         self.assertEqual(app.config.default_execution, THREAD_EXECUTION)
         self.assertEqual(app.config.thread_pool_workers, 4)
+
+    def test_tls_cert_and_key_must_be_provided_together(self) -> None:
+        with self.assertRaisesRegex(ValueError, "tls_certfile and tls_keyfile"):
+            TasgiConfig(tls_certfile="cert.pem")
 
     def test_app_state_handles_concurrent_access(self) -> None:
         state = AppState()

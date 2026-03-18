@@ -5,8 +5,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import importlib.util
-from typing import Optional
 from pathlib import Path
+from typing import Optional
 
 from .asgi_server import ASGIServer
 from .config import TasgiConfig
@@ -29,10 +29,10 @@ async def serve(
 ) -> None:
     """Serve an ASGI app using explicit values or the app config defaults."""
 
-    server = ASGIServer(app)
     config = getattr(app, "config", TasgiConfig())
     resolved_host = host or config.host
     resolved_port = port or config.port
+    server = ASGIServer(app)
     await server.serve(host=resolved_host, port=resolved_port)
 
 
