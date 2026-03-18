@@ -227,14 +227,36 @@ class TasgiRoutingAndRequestTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn(b"default get", response)
 
+    async def test_route_namespace_exposes_router_style_registration(self) -> None:
+        app = TasgiApp()
+
+        @app.route.get("/users")
+        async def list_users(request) -> TextResponse:
+            return TextResponse("users")
+
+        @app.route.post("/users")
+        def create_user(request) -> TextResponse:
+            return TextResponse("created")
+
+        try:
+            get_response, post_response = await asyncio.gather(
+                ASGIServer(app).handle_raw_request(build_get_request("/users")),
+                ASGIServer(app).handle_raw_request(build_post_request("/users", b"body")),
+            )
+        finally:
+            await app.close()
+
+        self.assertTrue(get_response.endswith(b"\r\n\r\nusers"))
+        self.assertTrue(post_response.endswith(b"\r\n\r\ncreated"))
+
     async def test_get_post_404_and_405(self) -> None:
         app = TasgiApp()
 
-        @app.get("/")
+        @app.route.get("/")
         async def home(request) -> TextResponse:
             return TextResponse("home")
 
-        @app.post("/echo")
+        @app.route.post("/echo")
         def echo(request) -> TextResponse:
             return TextResponse(request.text())
 
@@ -261,7 +283,7 @@ class TasgiRoutingAndRequestTests(unittest.IsolatedAsyncioTestCase):
     async def test_path_params_are_exposed_to_handlers(self) -> None:
         app = TasgiApp()
 
-        @app.get("/users/{id}/posts/{post_id}", metadata={"name": "user-post-detail"})
+        @app.route.get("/users/{id}/posts/{post_id}", metadata={"name": "user-post-detail"})
         async def post_detail(request) -> JsonResponse:
             return JsonResponse(
                 {
@@ -289,7 +311,7 @@ class TasgiDocsTests(unittest.IsolatedAsyncioTestCase):
         app = TasgiApp()
         app.configure_docs(title="Demo API", version="1.2.0", description="Demo docs")
 
-        @app.get(
+        @app.route.get(
             "/users/{id}",
             summary="Get user",
             description="Return one user",
@@ -299,7 +321,7 @@ class TasgiDocsTests(unittest.IsolatedAsyncioTestCase):
         async def get_user(request) -> JsonResponse:
             return JsonResponse({"id": request.route_params["id"]})
 
-        @app.post("/users", summary="Create user")
+        @app.route.post("/users", summary="Create user")
         def create_user(request) -> JsonResponse:
             return JsonResponse({"created": True}, status_code=201)
 
@@ -362,7 +384,7 @@ class TasgiDocsTests(unittest.IsolatedAsyncioTestCase):
     def test_openapi_schema_defaults_to_success_response_without_explicit_docs(self) -> None:
         app = TasgiApp()
 
-        @app.get("/")
+        @app.route.get("/")
         async def home(request) -> TextResponse:
             return TextResponse("home")
 
@@ -372,7 +394,7 @@ class TasgiDocsTests(unittest.IsolatedAsyncioTestCase):
     async def test_builtin_openapi_and_docs_routes_work_from_config(self) -> None:
         app = TasgiApp(docs=True, title="Demo Docs", version="2.0.0")
 
-        @app.get("/", summary="Home", response_model=str)
+        @app.route.get("/", summary="Home", response_model=str)
         async def home(request) -> str:
             return "home"
 
@@ -400,7 +422,7 @@ class TasgiDocsTests(unittest.IsolatedAsyncioTestCase):
 
         app = TasgiApp()
 
-        @app.post(
+        @app.route.post(
             "/echo",
             summary="Echo message",
             tags=["demo"],
@@ -421,6 +443,45 @@ class TasgiDocsTests(unittest.IsolatedAsyncioTestCase):
             "string",
         )
 
+    def test_router_level_tags_and_error_responses_flow_into_openapi(self) -> None:
+        app = TasgiApp()
+        router = Router(
+            tags=["users"],
+            responses={
+                404: {
+                    "description": "User not found",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "detail": {"type": "string"},
+                        },
+                        "required": ["detail"],
+                    },
+                }
+            },
+        )
+
+        @router.get("/users/{id}", summary="Get one user", tags=["detail"], response_model=dict[str, str])
+        async def get_user(request) -> dict[str, str]:
+            return {"id": request.route_params["id"]}
+
+        app.include_router(router, prefix="/api")
+
+        document = app.openapi_schema()
+        operation = document["paths"]["/api/users/{id}"]["get"]
+
+        self.assertEqual(operation["summary"], "Get one user")
+        self.assertEqual(operation["tags"], ["users", "detail"])
+        self.assertEqual(operation["responses"]["404"]["description"], "User not found")
+        self.assertEqual(
+            operation["responses"]["404"]["content"]["application/json"]["schema"]["properties"]["detail"]["type"],
+            "string",
+        )
+        self.assertEqual(
+            operation["responses"]["200"]["content"]["application/json"]["schema"]["additionalProperties"]["type"],
+            "string",
+        )
+
     async def test_typed_body_parameter_and_model_return_are_coerced_automatically(self) -> None:
         @dataclass
         class EchoIn:
@@ -432,7 +493,7 @@ class TasgiDocsTests(unittest.IsolatedAsyncioTestCase):
 
         app = TasgiApp()
 
-        @app.post("/echo", request_model=EchoIn, response_model=EchoOut, status_code=201)
+        @app.route.post("/echo", request_model=EchoIn, response_model=EchoOut, status_code=201)
         def echo(request, body: EchoIn) -> EchoOut:
             self.assertIsInstance(body, EchoIn)
             return EchoOut(echoed=body.message)
@@ -448,11 +509,11 @@ class TasgiDocsTests(unittest.IsolatedAsyncioTestCase):
     async def test_exact_route_wins_before_param_route(self) -> None:
         app = TasgiApp()
 
-        @app.get("/users/me")
+        @app.route.get("/users/me")
         async def me(request) -> TextResponse:
             return TextResponse("exact")
 
-        @app.get("/users/{id}")
+        @app.route.get("/users/{id}")
         async def user_detail(request) -> TextResponse:
             return TextResponse("param:%s" % request.route_params["id"])
 
@@ -610,7 +671,7 @@ class TasgiDocsTests(unittest.IsolatedAsyncioTestCase):
         def startup(app_instance) -> None:
             app_instance.state.message = "ready"
 
-        @app.post("/inspect")
+        @app.route.post("/inspect")
         async def inspect_request(request) -> JsonResponse:
             return JsonResponse(
                 {
@@ -657,7 +718,7 @@ class TasgiDocsTests(unittest.IsolatedAsyncioTestCase):
         def shutdown(app_instance) -> None:
             app_instance.remove_service("counter")
 
-        @app.get("/count")
+        @app.route.get("/count")
         def count(request) -> JsonResponse:
             counter = request.service("counter")
             missing = request.service("missing", "fallback")
@@ -704,7 +765,7 @@ class TasgiExecutionTests(unittest.IsolatedAsyncioTestCase):
         def build_message(token=Depends(get_token)) -> str:
             return "message:%s" % token
 
-        @app.get("/deps")
+        @app.route.get("/deps")
         async def deps_route(
             request,
             token=Depends(get_token),
@@ -729,7 +790,7 @@ class TasgiExecutionTests(unittest.IsolatedAsyncioTestCase):
             calls["settings"] += 1
             return {"prefix": "cached"}
 
-        @app.get("/cache")
+        @app.route.get("/cache")
         async def cache_route(request, settings=Depends(get_settings, scope=APP_SCOPE)) -> TextResponse:
             return TextResponse(settings["prefix"])
 
@@ -759,11 +820,11 @@ class TasgiExecutionTests(unittest.IsolatedAsyncioTestCase):
             async_dependency_threads.append(threading.get_ident())
             return request.path.upper()
 
-        @app.get("/async", execution=ASYNC_EXECUTION)
+        @app.route.get("/async", execution=ASYNC_EXECUTION)
         async def async_route(request, path=Depends(sync_dependency)) -> TextResponse:
             return TextResponse("async:%s" % path)
 
-        @app.get("/thread")
+        @app.route.get("/thread")
         def thread_route(request, upper=Depends(async_dependency)) -> TextResponse:
             sync_handler_threads.append(threading.get_ident())
             return TextResponse("thread:%s" % upper)
@@ -789,7 +850,7 @@ class TasgiExecutionTests(unittest.IsolatedAsyncioTestCase):
         def invalid_dependency(request) -> str:
             return request.path
 
-        @app.get("/bad")
+        @app.route.get("/bad")
         async def bad_route(request, value=Depends(invalid_dependency, scope=APP_SCOPE)) -> TextResponse:
             return TextResponse(value)
 
@@ -806,7 +867,7 @@ class TasgiExecutionTests(unittest.IsolatedAsyncioTestCase):
     async def test_async_streaming_response_is_sent_in_multiple_body_messages(self) -> None:
         app = TasgiApp()
 
-        @app.get("/stream")
+        @app.route.get("/stream")
         async def stream_route(request) -> StreamingResponse:
             async def chunks():
                 yield "hello "
@@ -828,7 +889,7 @@ class TasgiExecutionTests(unittest.IsolatedAsyncioTestCase):
         loop_thread_id = threading.get_ident()
         generator_thread_ids: list[int] = []
 
-        @app.get("/stream")
+        @app.route.get("/stream")
         def stream_route(request) -> StreamingResponse:
             def chunks():
                 generator_thread_ids.append(threading.get_ident())
@@ -853,12 +914,12 @@ class TasgiExecutionTests(unittest.IsolatedAsyncioTestCase):
         seen_async_threads: list[int] = []
         seen_sync_threads: list[int] = []
 
-        @app.get("/json")
+        @app.route.get("/json")
         async def json_route(request) -> JsonResponse:
             seen_async_threads.append(threading.get_ident())
             return JsonResponse({"ok": True})
 
-        @app.post("/echo")
+        @app.route.post("/echo")
         def echo_route(request) -> TextResponse:
             seen_sync_threads.append(threading.get_ident())
             return TextResponse(request.text())
@@ -883,12 +944,12 @@ class TasgiExecutionTests(unittest.IsolatedAsyncioTestCase):
         seen_async_threads: list[int] = []
         seen_sync_threads: list[int] = []
 
-        @app.get("/sync")
+        @app.route.get("/sync")
         def sync_route(request) -> TextResponse:
             seen_sync_threads.append(threading.get_ident())
             return TextResponse("sync route")
 
-        @app.get("/async", execution=ASYNC_EXECUTION)
+        @app.route.get("/async", execution=ASYNC_EXECUTION)
         async def async_route(request) -> TextResponse:
             seen_async_threads.append(threading.get_ident())
             return TextResponse("async route")
@@ -910,7 +971,7 @@ class TasgiExecutionTests(unittest.IsolatedAsyncioTestCase):
     async def test_async_route_works_without_override_in_thread_default_app(self) -> None:
         app = TasgiApp(config=TasgiConfig(default_execution=THREAD_EXECUTION))
 
-        @app.get("/async")
+        @app.route.get("/async")
         async def async_route(request) -> TextResponse:
             return TextResponse("async default")
 
@@ -924,7 +985,7 @@ class TasgiExecutionTests(unittest.IsolatedAsyncioTestCase):
     async def test_multiple_concurrent_sync_requests_do_not_corrupt_state(self) -> None:
         app = TasgiApp(config=TasgiConfig(default_execution=THREAD_EXECUTION))
 
-        @app.post("/echo")
+        @app.route.post("/echo")
         def echo_route(request) -> TextResponse:
             return TextResponse(request.text())
 
@@ -950,7 +1011,7 @@ class TasgiExecutionTests(unittest.IsolatedAsyncioTestCase):
         handler_thread_ids: list[int] = []
         transport = BufferingTransport()
 
-        @app.get("/thread")
+        @app.route.get("/thread")
         def thread_route(request) -> TextResponse:
             handler_thread_ids.append(threading.get_ident())
             return TextResponse("thread route")
@@ -970,7 +1031,7 @@ class TasgiExecutionTests(unittest.IsolatedAsyncioTestCase):
     async def test_cpu_handler_returns_expected_result(self) -> None:
         app = TasgiApp(config=TasgiConfig(default_execution=THREAD_EXECUTION))
 
-        @app.get("/cpu")
+        @app.route.get("/cpu")
         def cpu_route(request) -> TextResponse:
             return TextResponse("CPU result: %s" % cpu_demo_work())
 
@@ -995,12 +1056,12 @@ class TasgiMiddlewareTests(unittest.IsolatedAsyncioTestCase):
             events.append("after:%s:%s" % (request.path, response.status_code))
             return response
 
-        @app.get("/async")
+        @app.route.get("/async")
         async def async_route(request) -> TextResponse:
             events.append("handler:async")
             return TextResponse("async")
 
-        @app.get("/sync")
+        @app.route.get("/sync")
         def sync_route(request) -> TextResponse:
             events.append("handler:sync")
             return TextResponse("sync")
@@ -1024,7 +1085,7 @@ class TasgiMiddlewareTests(unittest.IsolatedAsyncioTestCase):
         app = TasgiApp()
         app.add_middleware(TimingMiddleware())
 
-        @app.get("/")
+        @app.route.get("/")
         async def home(request) -> TextResponse:
             return TextResponse("home")
 
@@ -1040,7 +1101,7 @@ class TasgiMiddlewareTests(unittest.IsolatedAsyncioTestCase):
         app = TasgiApp()
         app.add_middleware(LoggingMiddleware(logger=logs.append))
 
-        @app.get("/")
+        @app.route.get("/")
         async def home(request) -> TextResponse:
             return TextResponse("home")
 
@@ -1058,7 +1119,7 @@ class TasgiMiddlewareTests(unittest.IsolatedAsyncioTestCase):
         app = TasgiApp(debug=True)
         app.add_middleware(ExceptionMiddleware())
 
-        @app.get("/error")
+        @app.route.get("/error")
         async def error_route(request):
             raise RuntimeError("wrapped")
 
@@ -1074,7 +1135,7 @@ class TasgiErrorHandlingTests(unittest.IsolatedAsyncioTestCase):
     async def test_handler_exception_returns_generic_500_in_production_mode(self) -> None:
         app = TasgiApp(config=TasgiConfig(debug=False))
 
-        @app.get("/error")
+        @app.route.get("/error")
         def error_route(request):
             raise RuntimeError("boom")
 
@@ -1089,7 +1150,7 @@ class TasgiErrorHandlingTests(unittest.IsolatedAsyncioTestCase):
     async def test_handler_exception_returns_debug_text_when_debug_enabled(self) -> None:
         app = TasgiApp(config=TasgiConfig(debug=True))
 
-        @app.get("/error")
+        @app.route.get("/error")
         def error_route(request):
             raise RuntimeError("boom")
 
@@ -1103,7 +1164,7 @@ class TasgiErrorHandlingTests(unittest.IsolatedAsyncioTestCase):
     async def test_invalid_handler_return_still_produces_complete_500_response(self) -> None:
         app = TasgiApp(config=TasgiConfig(debug=False))
 
-        @app.get("/bad")
+        @app.route.get("/bad")
         async def bad_route(request):
             return "not-a-response"
 

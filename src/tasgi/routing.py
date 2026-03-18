@@ -74,11 +74,31 @@ class _WebSocketParamRoute:
 class Router:
     """Exact-first router with path params and 404/405 support."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        tags: Optional[list[str]] = None,
+        responses: Optional[dict[int, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> None:
         self._http_static_routes: dict[str, dict[str, Route]] = {}
         self._http_param_routes: dict[int, list[_ParamRouteGroup]] = {}
         self._websocket_static_routes: dict[str, Route] = {}
         self._websocket_param_routes: dict[int, list[_WebSocketParamRoute]] = {}
+        self._default_metadata = _build_route_metadata(
+            metadata=metadata,
+            summary=None,
+            description=None,
+            tags=tags,
+            operation_id=None,
+            request_model=None,
+            response_model=None,
+            request_schema=None,
+            response_schema=None,
+            responses=responses,
+            status_code=None,
+            include_in_schema=True,
+        )
 
     def add_route(
         self,
@@ -98,7 +118,7 @@ class Router:
         if scope_type not in {"http", "websocket"}:
             raise ValueError("Unsupported route scope type %r." % scope_type)
 
-        route_metadata = dict(metadata or {})
+        route_metadata = _merge_route_metadata(self._default_metadata, metadata)
         is_async = inspect.iscoroutinefunction(handler)
         route_segments = _split_path(path)
         param_names = _extract_param_names(route_segments, path)
@@ -162,6 +182,7 @@ class Router:
         response_model: Any = None,
         request_schema: Optional[dict[str, Any]] = None,
         response_schema: Optional[dict[str, Any]] = None,
+        responses: Optional[dict[int, Any]] = None,
         status_code: Optional[int] = None,
         include_in_schema: bool = True,
     ):
@@ -178,6 +199,7 @@ class Router:
             response_model=response_model,
             request_schema=request_schema,
             response_schema=response_schema,
+            responses=responses,
             status_code=status_code,
             include_in_schema=include_in_schema,
         )
@@ -208,6 +230,7 @@ class Router:
         response_model: Any = None,
         request_schema: Optional[dict[str, Any]] = None,
         response_schema: Optional[dict[str, Any]] = None,
+        responses: Optional[dict[int, Any]] = None,
         status_code: Optional[int] = None,
         include_in_schema: bool = True,
     ):
@@ -226,6 +249,7 @@ class Router:
             response_model=response_model,
             request_schema=request_schema,
             response_schema=response_schema,
+            responses=responses,
             status_code=status_code,
             include_in_schema=include_in_schema,
         )
@@ -244,6 +268,7 @@ class Router:
         response_model: Any = None,
         request_schema: Optional[dict[str, Any]] = None,
         response_schema: Optional[dict[str, Any]] = None,
+        responses: Optional[dict[int, Any]] = None,
         status_code: Optional[int] = None,
         include_in_schema: bool = True,
     ):
@@ -262,6 +287,7 @@ class Router:
             response_model=response_model,
             request_schema=request_schema,
             response_schema=response_schema,
+            responses=responses,
             status_code=status_code,
             include_in_schema=include_in_schema,
         )
@@ -280,6 +306,7 @@ class Router:
         response_model: Any = None,
         request_schema: Optional[dict[str, Any]] = None,
         response_schema: Optional[dict[str, Any]] = None,
+        responses: Optional[dict[int, Any]] = None,
         status_code: Optional[int] = None,
         include_in_schema: bool = True,
     ):
@@ -298,6 +325,7 @@ class Router:
             response_model=response_model,
             request_schema=request_schema,
             response_schema=response_schema,
+            responses=responses,
             status_code=status_code,
             include_in_schema=include_in_schema,
         )
@@ -316,6 +344,7 @@ class Router:
         response_model: Any = None,
         request_schema: Optional[dict[str, Any]] = None,
         response_schema: Optional[dict[str, Any]] = None,
+        responses: Optional[dict[int, Any]] = None,
         status_code: Optional[int] = None,
         include_in_schema: bool = True,
     ):
@@ -334,6 +363,7 @@ class Router:
             response_model=response_model,
             request_schema=request_schema,
             response_schema=response_schema,
+            responses=responses,
             status_code=status_code,
             include_in_schema=include_in_schema,
         )
@@ -544,6 +574,7 @@ def _build_route_metadata(
     response_model: Any,
     request_schema: Optional[dict[str, Any]],
     response_schema: Optional[dict[str, Any]],
+    responses: Optional[dict[int, Any]],
     status_code: Optional[int],
     include_in_schema: bool,
 ) -> dict[str, Any]:
@@ -564,8 +595,55 @@ def _build_route_metadata(
         route_metadata["request_schema"] = dict(request_schema)
     if response_schema is not None:
         route_metadata["response_schema"] = dict(response_schema)
+    if responses is not None:
+        route_metadata["responses"] = _normalize_response_docs(responses)
     if status_code is not None:
         route_metadata["status_code"] = int(status_code)
     if include_in_schema is False:
         route_metadata["include_in_schema"] = False
     return route_metadata
+
+
+def _merge_route_metadata(base: dict[str, Any], override: Optional[dict[str, Any]]) -> dict[str, Any]:
+    merged = dict(base)
+    if not override:
+        return merged
+
+    override_data = dict(override)
+    if "tags" in override_data or "tags" in merged:
+        merged["tags"] = _merge_tags(merged.get("tags"), override_data.pop("tags", None))
+    if "responses" in override_data or "responses" in merged:
+        merged["responses"] = _merge_responses(merged.get("responses"), override_data.pop("responses", None))
+    merged.update(override_data)
+    return merged
+
+
+def _merge_tags(base: Any, override: Any) -> list[str]:
+    values: list[str] = []
+    for candidate in list(base or []) + list(override or []):
+        if candidate not in values:
+            values.append(candidate)
+    return values
+
+
+def _merge_responses(base: Any, override: Any) -> dict[int, dict[str, Any]]:
+    merged = dict(base or {})
+    for status_code, response_doc in dict(override or {}).items():
+        merged[int(status_code)] = dict(response_doc)
+    return merged
+
+
+def _normalize_response_docs(responses: dict[int, Any]) -> dict[int, dict[str, Any]]:
+    normalized: dict[int, dict[str, Any]] = {}
+    for status_code, value in responses.items():
+        code = int(status_code)
+        if not isinstance(value, dict):
+            raise TypeError("Route response docs for %s must be dictionaries." % code)
+        if any(key in value for key in {"schema", "description", "media_type"}):
+            response_doc = dict(value)
+        else:
+            response_doc = {"schema": dict(value)}
+        if "schema" in response_doc and response_doc["schema"] is not None:
+            response_doc["schema"] = dict(response_doc["schema"])
+        normalized[code] = response_doc
+    return normalized

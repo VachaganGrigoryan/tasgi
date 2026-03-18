@@ -68,12 +68,25 @@ async def require_http2(request, call_next):
 def build_demo_app() -> TasgiApp:
     """Create the example tasgi application."""
 
-    users_router = Router()
+    users_router = Router(
+        tags=["users"],
+        responses={
+            404: {
+                "description": "User not found",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "detail": {"type": "string"},
+                    },
+                    "required": ["detail"],
+                },
+            }
+        },
+    )
 
     @users_router.get(
         "/users",
         summary="List users",
-        tags=["users"],
         response_model=list[str],
     )
     def list_users(request) -> list[str]:
@@ -103,7 +116,7 @@ def build_demo_app() -> TasgiApp:
     def shutdown(app_instance) -> None:
         app_instance.remove_service("message_service")
 
-    @app.get("/", summary="Home", tags=["demo"], response_model=str)
+    @app.route.get("/", summary="Home", tags=["demo"], response_model=str)
     async def home(
         request,
         message_service=Depends(get_message_service, scope=APP_SCOPE),
@@ -111,7 +124,7 @@ def build_demo_app() -> TasgiApp:
     ) -> str:
         return "%s over %s" % (message_service.message, request_label)
 
-    @app.get("/json", summary="JSON response", tags=["demo"], response_model=dict[str, str])
+    @app.route.get("/json", summary="JSON response", tags=["demo"], response_model=dict[str, str])
     async def json_route(
         request,
         message_service=Depends(get_message_service, scope=APP_SCOPE),
@@ -124,7 +137,7 @@ def build_demo_app() -> TasgiApp:
             "label": request_label,
         }
 
-    @app.post(
+    @app.route.post(
         "/echo",
         summary="Echo message",
         description="Decode a JSON body into a dataclass and echo it back.",
@@ -136,16 +149,16 @@ def build_demo_app() -> TasgiApp:
     def echo(request, body: EchoIn) -> EchoOut:
         return EchoOut(echoed=body.message)
 
-    @app.get("/sleep", summary="Blocking sleep", tags=["thread"], response_model=str)
+    @app.route.get("/sleep", summary="Blocking sleep", tags=["thread"], response_model=str)
     def sleep_route(request) -> str:
         time.sleep(1.0)
         return "slept for 1.0 seconds"
 
-    @app.get("/cpu", summary="CPU-heavy thread route", tags=["thread"], response_model=str)
+    @app.route.get("/cpu", summary="CPU-heavy thread route", tags=["thread"], response_model=str)
     def cpu_route(request) -> str:
         return "CPU result: %s" % cpu_demo_work()
 
-    @app.get("/stream", summary="Async streaming response", tags=["streaming"])
+    @app.route.get("/stream", summary="Async streaming response", tags=["streaming"])
     async def stream_route(request) -> StreamingResponse:
         async def chunks():
             yield "async "
@@ -154,7 +167,7 @@ def build_demo_app() -> TasgiApp:
 
         return StreamingResponse(chunks(), media_type="text/plain; charset=utf-8")
 
-    @app.get("/thread-stream", summary="Threaded streaming response", tags=["streaming", "thread"])
+    @app.route.get("/thread-stream", summary="Threaded streaming response", tags=["streaming", "thread"])
     def thread_stream_route(request) -> StreamingResponse:
         def chunks():
             yield "thread "
@@ -163,7 +176,7 @@ def build_demo_app() -> TasgiApp:
 
         return StreamingResponse(chunks(), media_type="text/plain; charset=utf-8")
 
-    @app.get("/error", summary="Raise demo exception", tags=["demo"], response_model=str, status_code=500)
+    @app.route.get("/error", summary="Raise demo exception", tags=["demo"], response_model=str, status_code=500)
     def error_route(request):
         raise RuntimeError("demo error")
 

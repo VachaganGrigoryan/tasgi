@@ -170,10 +170,15 @@ class OpenAPIDocs:
         return operation
 
     def _build_responses(self, route: Route) -> dict[str, Any]:
+        responses: dict[str, Any] = {}
+
+        for status_code, response_doc in sorted(dict(route.metadata.get("responses", {})).items()):
+            responses[str(int(status_code))] = _serialize_response_doc(int(status_code), response_doc)
+
         registered = self._response_schemas.get((route.path, route.method))
         if registered:
-            return {
-                str(status_code): {
+            for status_code, response in sorted(registered.items()):
+                responses[str(status_code)] = {
                     "description": response.description or "HTTP %s response" % status_code,
                     "content": {
                         response.media_type: {
@@ -181,24 +186,26 @@ class OpenAPIDocs:
                         }
                     },
                 }
-                for status_code, response in sorted(registered.items())
-            }
 
         inferred = self._infer_response_schema(route)
-        if inferred is None:
-            return {"200": {"description": "Successful Response"}}
-
-        status_code, schema, media_type = inferred
-        return {
-            str(status_code): {
-                "description": "HTTP %s response" % status_code,
-                "content": {
-                    media_type: {
-                        "schema": schema,
-                    }
+        if inferred is not None:
+            status_code, schema, media_type = inferred
+            responses.setdefault(
+                str(status_code),
+                {
+                    "description": "HTTP %s response" % status_code,
+                    "content": {
+                        media_type: {
+                            "schema": schema,
+                        }
+                    },
                 },
-            }
-        }
+            )
+
+        if responses:
+            return responses
+
+        return {"200": {"description": "Successful Response"}}
 
     def _request_schema_for_route(self, route: Route) -> Optional[RequestSchema]:
         registered = self._request_schemas.get((route.path, route.method))
@@ -300,3 +307,26 @@ def _escape_html(value: str) -> str:
         .replace(">", "&gt;")
         .replace('"', "&quot;")
     )
+
+
+def _serialize_response_doc(status_code: int, response_doc: Any) -> dict[str, Any]:
+    if not isinstance(response_doc, dict):
+        raise TypeError("Route response docs for %s must be dictionaries." % status_code)
+
+    if any(key in response_doc for key in {"schema", "description", "media_type"}):
+        schema = response_doc.get("schema")
+        media_type = response_doc.get("media_type", "application/json")
+        description = response_doc.get("description") or "HTTP %s response" % status_code
+    else:
+        schema = response_doc
+        media_type = "application/json"
+        description = "HTTP %s response" % status_code
+
+    result: dict[str, Any] = {"description": description}
+    if schema is not None:
+        result["content"] = {
+            media_type: {
+                "schema": dict(schema),
+            }
+        }
+    return result

@@ -346,11 +346,11 @@ class HTTP2ServerTests(unittest.IsolatedAsyncioTestCase):
     async def test_tasgi_app_async_and_thread_handlers_work_over_http2(self) -> None:
         app = TasgiApp(config=TasgiConfig(default_execution="async", thread_pool_workers=4))
 
-        @app.get("/async")
+        @app.route.get("/async")
         async def async_route(request) -> JsonResponse:
             return JsonResponse({"mode": "async", "version": request.http_version})
 
-        @app.get("/thread")
+        @app.route.get("/thread")
         def thread_route(request) -> TextResponse:
             return TextResponse("thread-%s" % request.http_version)
 

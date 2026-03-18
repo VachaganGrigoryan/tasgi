@@ -57,15 +57,15 @@ app = TasgiApp(
 def startup(app):
     app.state.message = "tasgi ready"
 
-@app.get("/", execution=ASYNC_EXECUTION)
+@app.route.get("/", execution=ASYNC_EXECUTION)
 async def home(request):
     return TextResponse(request.app.state.message)
 
-@app.get("/json", execution=ASYNC_EXECUTION)
+@app.route.get("/json", execution=ASYNC_EXECUTION)
 async def get_json(request):
     return JsonResponse({"framework": "tasgi"})
 
-@app.post("/echo", execution=THREAD_EXECUTION)
+@app.route.post("/echo", execution=THREAD_EXECUTION)
 def echo(request):
     return TextResponse(request.text())
 ```
@@ -86,11 +86,11 @@ def echo(request):
 Route-level override is explicit:
 
 ```python
-@app.get("/cpu", execution=THREAD_EXECUTION)
+@app.route.get("/cpu", execution=THREAD_EXECUTION)
 def cpu(request):
     ...
 
-@app.get("/status", execution=ASYNC_EXECUTION)
+@app.route.get("/status", execution=ASYNC_EXECUTION)
 async def status(request):
     ...
 ```
