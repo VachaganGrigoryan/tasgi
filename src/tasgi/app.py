@@ -9,6 +9,7 @@ from typing import Optional
 
 from .asgi import build_request, receive_request_body, send_response, validate_http_scope
 from .config import TasgiConfig
+from .dependencies import DependencyResolver
 from .docs import OpenAPIDocs
 from .exceptions import HTTPError, MethodNotAllowed
 from .lifecycle import LifecycleManager
@@ -43,6 +44,7 @@ class TasgiApp:
             cpu_thread_pool_workers=self.config.cpu_thread_pool_workers,
         )
         self._owns_runtime = runtime is None
+        self._dependencies = DependencyResolver(self, self._runtime)
         self._startup_lock: Optional[asyncio.Lock] = None
         self._shutdown_lock: Optional[asyncio.Lock] = None
         self._middleware: list[Middleware] = []
@@ -142,6 +144,31 @@ class TasgiApp:
             return handler
 
         return decorator
+
+    def include_router(self, router: Router, *, prefix: str = "") -> None:
+        """Register routes from another router, optionally under a shared prefix."""
+
+        normalized_prefix = _normalize_router_prefix(prefix)
+        for route in router.iter_routes():
+            full_path = _join_router_prefix(normalized_prefix, route.path)
+            if route.scope_type == "websocket":
+                if not route.is_async:
+                    raise ValueError("tasgi WebSocket handlers must be async.")
+                self.router.add_websocket(
+                    full_path,
+                    route.handler,
+                    metadata=dict(route.metadata),
+                )
+                continue
+
+            self._validate_handler_policy(full_path, route.is_async, route.execution)
+            self.router.add_route(
+                full_path,
+                [route.method],
+                route.handler,
+                execution=route.execution,
+                metadata=dict(route.metadata),
+            )
 
     def on_startup(self, func):
         """Register a startup hook."""
@@ -285,6 +312,7 @@ class TasgiApp:
             finally:
                 if self._owns_runtime:
                     await self._runtime.shutdown()
+                self._dependencies.clear_app_cache()
                 self._closed = True
                 self._started = False
                 self._lifecycle_state = "stopped"
@@ -377,10 +405,11 @@ class TasgiApp:
 
     async def _dispatch_without_middleware(self, route: Route, request) -> Response:
         execution = self._resolve_execution(route)
+        kwargs = await self._dependencies.resolve_handler(route.handler, request)
         if execution == ASYNC_EXECUTION:
-            result = await route.handler(request)
+            result = await route.handler(**kwargs)
         else:
-            result = await self._runtime.run_sync(route.handler, request)
+            result = await self._runtime.run_sync(route.handler, **kwargs)
             if isinstance(result, StreamingResponse):
                 result.bind_thread_runtime(self._runtime)
 
@@ -455,6 +484,24 @@ class TasgiApp:
         if self._shutdown_lock is None:
             self._shutdown_lock = asyncio.Lock()
         return self._shutdown_lock
+
+
+def _normalize_router_prefix(prefix: str) -> str:
+    if not prefix:
+        return ""
+    if not prefix.startswith("/"):
+        raise ValueError("Router prefix must be empty or start with '/'.")
+    if prefix == "/":
+        return ""
+    return prefix.rstrip("/")
+
+
+def _join_router_prefix(prefix: str, path: str) -> str:
+    if not prefix:
+        return path
+    if path == "/":
+        return prefix
+    return prefix + path
 
 
 App = TasgiApp

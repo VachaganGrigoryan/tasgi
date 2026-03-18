@@ -6,7 +6,9 @@ import asyncio
 import time
 
 from tasgi import (
+    APP_SCOPE,
     THREAD_EXECUTION,
+    Depends,
     JsonResponse,
     Response,
     StreamingResponse,
@@ -30,6 +32,14 @@ class MessageService:
 
     def __init__(self, message: str) -> None:
         self.message = message
+
+
+def get_message_service(app) -> MessageService:
+    return app.require_service("message_service")
+
+
+def get_request_label(request) -> str:
+    return "HTTP/%s" % request.http_version
 
 
 async def require_http2(request, call_next):
@@ -71,18 +81,25 @@ def build_demo_app() -> TasgiApp:
         app_instance.remove_service("message_service")
 
     @app.get("/", metadata={"summary": "Home", "tags": ["demo"]})
-    async def home(request) -> TextResponse:
-        message_service = request.service("message_service")
-        return TextResponse("%s over HTTP/%s" % (message_service.message, request.http_version))
+    async def home(
+        request,
+        message_service=Depends(get_message_service, scope=APP_SCOPE),
+        request_label=Depends(get_request_label),
+    ) -> TextResponse:
+        return TextResponse("%s over %s" % (message_service.message, request_label))
 
     @app.get("/json", metadata={"summary": "JSON response", "tags": ["demo"]})
-    async def json_route(request) -> JsonResponse:
-        message_service = request.service("message_service")
+    async def json_route(
+        request,
+        message_service=Depends(get_message_service, scope=APP_SCOPE),
+        request_label=Depends(get_request_label),
+    ) -> JsonResponse:
         return JsonResponse(
             {
                 "framework": "tasgi",
                 "message": message_service.message,
                 "http_version": request.http_version,
+                "label": request_label,
             }
         )
 
@@ -190,8 +207,9 @@ def build_demo_app() -> TasgiApp:
                 "framework": {"type": "string"},
                 "message": {"type": "string"},
                 "http_version": {"type": "string"},
+                "label": {"type": "string"},
             },
-            "required": ["framework", "message", "http_version"],
+            "required": ["framework", "message", "http_version", "label"],
         },
     )
     for path in ["/echo", "/sleep", "/cpu", "/stream", "/thread-stream", "/error"]:

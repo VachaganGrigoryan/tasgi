@@ -15,8 +15,10 @@ if str(SRC_ROOT) not in sys.path:
 
 from tasgi import (
     ASYNC_EXECUTION,
+    APP_SCOPE,
     THREAD_EXECUTION,
     AppState,
+    Depends,
     ExceptionMiddleware,
     JsonResponse,
     LoggingMiddleware,
@@ -421,6 +423,106 @@ class TasgiDocsTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "Invalid path parameter segment"):
             router.add_route("/users/{id", ["GET"], handler)
 
+    def test_router_decorators_register_http_methods(self) -> None:
+        router = Router()
+
+        @router.get("/users")
+        def list_users(request) -> TextResponse:
+            return TextResponse("list")
+
+        @router.post("/users")
+        def create_user(request) -> TextResponse:
+            return TextResponse("create")
+
+        @router.put("/users/{id}")
+        def update_user(request) -> TextResponse:
+            return TextResponse("update")
+
+        @router.delete("/users/{id}")
+        def delete_user(request) -> TextResponse:
+            return TextResponse("delete")
+
+        self.assertEqual(router.resolve("GET", "/users").route.handler, list_users)
+        self.assertEqual(router.resolve("POST", "/users").route.handler, create_user)
+        self.assertEqual(router.resolve("PUT", "/users/1").route.handler, update_user)
+        self.assertEqual(router.resolve("DELETE", "/users/1").route.handler, delete_user)
+
+    async def test_include_router_imports_routes_with_prefix(self) -> None:
+        app = TasgiApp()
+        router = Router()
+
+        @router.get("/users")
+        async def list_users(request) -> TextResponse:
+            return TextResponse("users")
+
+        @router.post("/users/{id}")
+        def update_user(request) -> TextResponse:
+            return TextResponse("user:%s" % request.route_params["id"])
+
+        app.include_router(router, prefix="/api")
+
+        try:
+            get_response = await ASGIServer(app).handle_raw_request(build_get_request("/api/users"))
+            post_response = await ASGIServer(app).handle_raw_request(
+                build_post_request("/api/users/42", b"ignored")
+            )
+            method_response = await ASGIServer(app).handle_raw_request(build_get_request("/api/users/42"))
+        finally:
+            await app.close()
+
+        self.assertTrue(get_response.endswith(b"\r\n\r\nusers"))
+        self.assertTrue(post_response.endswith(b"\r\n\r\nuser:42"))
+        self.assertIn(b"HTTP/1.1 405 Method Not Allowed", method_response)
+        self.assertIn(b"allow: POST\r\n", method_response)
+
+    async def test_include_router_preserves_execution_policy(self) -> None:
+        app = TasgiApp(config=TasgiConfig(default_execution=THREAD_EXECUTION))
+        router = Router()
+        loop_thread_id = threading.get_ident()
+        async_threads: list[int] = []
+        sync_threads: list[int] = []
+
+        @router.get("/async", execution=ASYNC_EXECUTION)
+        async def async_route(request) -> TextResponse:
+            async_threads.append(threading.get_ident())
+            return TextResponse("async")
+
+        @router.get("/sync")
+        def sync_route(request) -> TextResponse:
+            sync_threads.append(threading.get_ident())
+            return TextResponse("sync")
+
+        app.include_router(router, prefix="/module")
+
+        try:
+            async_response, sync_response = await asyncio.gather(
+                ASGIServer(app).handle_raw_request(build_get_request("/module/async")),
+                ASGIServer(app).handle_raw_request(build_get_request("/module/sync")),
+            )
+        finally:
+            await app.close()
+
+        self.assertIn(b"async", async_response)
+        self.assertIn(b"sync", sync_response)
+        self.assertEqual(async_threads, [loop_thread_id])
+        self.assertEqual(len(sync_threads), 1)
+        self.assertNotEqual(sync_threads[0], loop_thread_id)
+
+    def test_include_router_rejects_invalid_prefix_and_conflicts(self) -> None:
+        app = TasgiApp()
+        router = Router()
+
+        @router.get("/users")
+        async def list_users(request) -> TextResponse:
+            return TextResponse("users")
+
+        with self.assertRaisesRegex(ValueError, "Router prefix must be empty or start with '/'"):
+            app.include_router(router, prefix="api")
+
+        app.include_router(router, prefix="/api")
+        with self.assertRaisesRegex(ValueError, "Route already registered"):
+            app.include_router(router, prefix="/api")
+
     async def test_request_text_json_and_app_state(self) -> None:
         app = TasgiApp(config=TasgiConfig(debug=True))
 
@@ -511,6 +613,116 @@ class TasgiDocsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class TasgiExecutionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_request_scoped_dependencies_are_cached_per_request(self) -> None:
+        app = TasgiApp()
+        calls = {"token": 0}
+
+        def get_token(request) -> str:
+            calls["token"] += 1
+            return "token:%s" % request.path
+
+        def build_message(token=Depends(get_token)) -> str:
+            return "message:%s" % token
+
+        @app.get("/deps")
+        async def deps_route(
+            request,
+            token=Depends(get_token),
+            message=Depends(build_message),
+        ) -> JsonResponse:
+            return JsonResponse({"token": token, "message": message})
+
+        try:
+            response = await ASGIServer(app).handle_raw_request(build_get_request("/deps"))
+        finally:
+            await app.close()
+
+        self.assertIn(b'"token": "token:/deps"', response)
+        self.assertIn(b'"message": "message:token:/deps"', response)
+        self.assertEqual(calls["token"], 1)
+
+    async def test_app_scoped_dependencies_are_cached_across_requests(self) -> None:
+        app = TasgiApp()
+        calls = {"settings": 0}
+
+        def get_settings(app) -> dict[str, str]:
+            calls["settings"] += 1
+            return {"prefix": "cached"}
+
+        @app.get("/cache")
+        async def cache_route(request, settings=Depends(get_settings, scope=APP_SCOPE)) -> TextResponse:
+            return TextResponse(settings["prefix"])
+
+        try:
+            responses = await asyncio.gather(
+                ASGIServer(app).handle_raw_request(build_get_request("/cache")),
+                ASGIServer(app).handle_raw_request(build_get_request("/cache")),
+            )
+        finally:
+            await app.close()
+
+        self.assertEqual(calls["settings"], 1)
+        self.assertTrue(all(response.endswith(b"\r\n\r\ncached") for response in responses))
+
+    async def test_dependencies_resolve_across_async_and_thread_modes(self) -> None:
+        app = TasgiApp(config=TasgiConfig(default_execution=THREAD_EXECUTION))
+        loop_thread_id = threading.get_ident()
+        sync_dependency_threads: list[int] = []
+        async_dependency_threads: list[int] = []
+        sync_handler_threads: list[int] = []
+
+        def sync_dependency(request) -> str:
+            sync_dependency_threads.append(threading.get_ident())
+            return request.path
+
+        async def async_dependency(request) -> str:
+            async_dependency_threads.append(threading.get_ident())
+            return request.path.upper()
+
+        @app.get("/async", execution=ASYNC_EXECUTION)
+        async def async_route(request, path=Depends(sync_dependency)) -> TextResponse:
+            return TextResponse("async:%s" % path)
+
+        @app.get("/thread")
+        def thread_route(request, upper=Depends(async_dependency)) -> TextResponse:
+            sync_handler_threads.append(threading.get_ident())
+            return TextResponse("thread:%s" % upper)
+
+        try:
+            async_response, thread_response = await asyncio.gather(
+                ASGIServer(app).handle_raw_request(build_get_request("/async")),
+                ASGIServer(app).handle_raw_request(build_get_request("/thread")),
+            )
+        finally:
+            await app.close()
+
+        self.assertIn(b"async:/async", async_response)
+        self.assertIn(b"thread:/THREAD", thread_response)
+        self.assertEqual(async_dependency_threads, [loop_thread_id])
+        self.assertTrue(all(thread_id != loop_thread_id for thread_id in sync_dependency_threads))
+        self.assertEqual(len(sync_handler_threads), 1)
+        self.assertNotEqual(sync_handler_threads[0], loop_thread_id)
+
+    async def test_app_scoped_dependency_cannot_depend_on_request_object(self) -> None:
+        app = TasgiApp(debug=True)
+
+        def invalid_dependency(request) -> str:
+            return request.path
+
+        @app.get("/bad")
+        async def bad_route(request, value=Depends(invalid_dependency, scope=APP_SCOPE)) -> TextResponse:
+            return TextResponse(value)
+
+        try:
+            response = await ASGIServer(app).handle_raw_request(build_get_request("/bad"))
+        finally:
+            await app.close()
+
+        self.assertIn(
+            b"App-scoped dependencies cannot depend on the request object.",
+            response,
+        )
+
     async def test_async_streaming_response_is_sent_in_multiple_body_messages(self) -> None:
         app = TasgiApp()
 

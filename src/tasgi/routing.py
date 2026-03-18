@@ -147,6 +147,74 @@ class Router:
                 metadata=dict(route_metadata),
             )
 
+    def route(
+        self,
+        path: str,
+        *,
+        methods: Optional[list[str]] = None,
+        execution: Optional[ExecutionPolicy] = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ):
+        """Decorator form for registering one or more HTTP methods."""
+
+        resolved_methods = list(methods or ["GET"])
+
+        def decorator(handler: Handler):
+            self.add_route(
+                path,
+                resolved_methods,
+                handler,
+                execution=execution,
+                metadata=metadata,
+            )
+            return handler
+
+        return decorator
+
+    def get(
+        self,
+        path: str,
+        *,
+        execution: Optional[ExecutionPolicy] = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ):
+        """Register a GET handler on this router."""
+
+        return self.route(path, methods=["GET"], execution=execution, metadata=metadata)
+
+    def post(
+        self,
+        path: str,
+        *,
+        execution: Optional[ExecutionPolicy] = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ):
+        """Register a POST handler on this router."""
+
+        return self.route(path, methods=["POST"], execution=execution, metadata=metadata)
+
+    def put(
+        self,
+        path: str,
+        *,
+        execution: Optional[ExecutionPolicy] = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ):
+        """Register a PUT handler on this router."""
+
+        return self.route(path, methods=["PUT"], execution=execution, metadata=metadata)
+
+    def delete(
+        self,
+        path: str,
+        *,
+        execution: Optional[ExecutionPolicy] = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ):
+        """Register a DELETE handler on this router."""
+
+        return self.route(path, methods=["DELETE"], execution=execution, metadata=metadata)
+
     def resolve(self, method: str, path: str) -> RouteMatch:
         """Resolve a request method/path pair into a route or 404/405 result."""
 
@@ -192,6 +260,20 @@ class Router:
             metadata=metadata,
             scope_type="websocket",
         )
+
+    def websocket(
+        self,
+        path: str,
+        *,
+        metadata: Optional[dict[str, Any]] = None,
+    ):
+        """Decorator form for registering one WebSocket handler."""
+
+        def decorator(handler: Handler):
+            self.add_websocket(path, handler, metadata=metadata)
+            return handler
+
+        return decorator
 
     def resolve_websocket(self, path: str) -> RouteMatch:
         """Resolve a WebSocket path into a route or a not-found result."""
